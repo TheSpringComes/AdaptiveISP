@@ -1,5 +1,5 @@
 # [NeurIPS2024] AdaptiveISP: Learning an Adaptive Image Signal Processor for Object Detection
-### [Project Page](https://openimaginglab.github.io/AdaptiveISP/) | [Paper](https://arxiv.org/pdf/2410.22939) | [Data](https://pan.baidu.com/s/1tQieluAmQlg_aqmsU0iWyQ?pwd=nips) <br>
+### [Project Page](https://openimaginglab.github.io/AdaptiveISP/) | [Paper](https://arxiv.org/pdf/2410.22939) | [Data (Baidu Drive)](https://pan.baidu.com/s/1J0tLRr4IcxPxogcoKKs3Hw?pwd=nips) | [Data (OneDrive)](https://1drv.ms/u/s!Aq1PSygduHX9czHB9WkUNUTUx8o?e=KURDwo) <br>
 
 Yujin Wang, Tianyi Xu, Fan Zhang, Tianfan Xue, Jinwei Gu <br><br>
 
@@ -10,7 +10,7 @@ Yujin Wang, Tianyi Xu, Fan Zhang, Tianfan Xue, Jinwei Gu <br><br>
 
 ## Abstract
 Image Signal Processors (ISPs) convert raw sensor signals into digital images, which significantly influence the image quality and the performance of downstream computer vision tasks. 
-Designing ISP pipeline and tuning ISP parameters are two key steps for building an imaging and vision system.
+Designing an ISP pipeline and tuning ISP parameters are two key steps for building an imaging and vision system.
 To find optimal ISP configurations, recent works use deep neural networks as a proxy to search for ISP parameters or ISP pipelines. However, these methods are primarily designed to maximize the image quality, which are sub-optimal in the performance of high-level computer vision tasks such as detection, recognition, and tracking. Moreover, after training, the learned ISP pipelines are mostly fixed at the inference time, whose performance degrades in dynamic scenes. 
 To jointly optimize ISP structures and parameters, we propose AdaptiveISP, a task-driven and scene-adaptive ISP. 
 One key observation is that for the majority of input images, only a few processing modules are needed to improve the performance of downstream recognition tasks, and only a few inputs require more processing.
@@ -57,15 +57,15 @@ To train the AdaptiveISP model:
     ```
 
 ### Test
-Test the AdaptiveISP model on LOD dataset:
-1. Modify the dataroot yolov3/data/lod.yaml
-2. Download the pretrained model and put in pretrained folder. 
+Test the AdaptiveISP model on the LOD dataset:
+1. Modify the data root yolov3/data/lod.yaml
+2. Download the pre-trained model and put it in pre-trained folder. 
 
-    - [ckpt-lod-df-1.0](https://github.com/OpenImagingLab/AdaptiveISP/releases/download/v1.0/ckpt-lod-df-0.98.pth): training with discount facotr(1.0)
+    - [ckpt-lod-df-1.0](https://github.com/OpenImagingLab/AdaptiveISP/releases/download/v1.0/ckpt-lod-df-0.98.pth): training with discount factor (1.0)
 
-    - [ckpt-lod-df-0.98](https://github.com/OpenImagingLab/AdaptiveISP/releases/download/v1.0/ckpt-lod-df-1.0.pth): training with discount facotr (0.98)
+    - [ckpt-lod-df-0.98](https://github.com/OpenImagingLab/AdaptiveISP/releases/download/v1.0/ckpt-lod-df-1.0.pth): training with discount factor (0.98)
 
-    - [yolov3](https://github.com/OpenImagingLab/AdaptiveISP/releases/download/v1.0/yolov3.pt): pretrined model on COCO
+    - [yolov3](https://github.com/OpenImagingLab/AdaptiveISP/releases/download/v1.0/yolov3.pt): pre-trained model on COCO
 
 2. Run
     ```bash
