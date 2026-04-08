@@ -1,0 +1,10 @@
+python yolov3/val_adaptiveisp.py     --project=results     --isp_weights=pretrained/DynamicISP_iter_lod_10000.pth     --data_name=lod     --data=yolov3/data/lod.yaml     --batch-size=1     --steps=5     --name=adptiveisp     --save_image     --save_param
+python yolov3/val_adaptiveisp.py     --project=results     --isp_weights=pretrained/DynamicISP_iter_lod_20000.pth     --data_name=lod     --data=yolov3/data/lod.yaml     --batch-size=1     --steps=5     --name=adptiveisp     --save_image     --save_param
+python yolov3/val_adaptiveisp.py     --project=results     --isp_weights=pretrained/DynamicISP_iter_lod_30000.pth     --data_name=lod     --data=yolov3/data/lod.yaml     --batch-size=1     --steps=5     --name=adptiveisp     --save_image     --save_param
+python yolov3/val_adaptiveisp.py     --project=results     --isp_weights=pretrained/DynamicISP_iter_lod_40000.pth     --data_name=lod     --data=yolov3/data/lod.yaml     --batch-size=1     --steps=5     --name=adptiveisp     --save_image     --save_param
+
+python yolov3/val_adaptiveisp.py     --project=results     --isp_weights=pretrained/DynamicISP_iter_lod_10000.pth     --data_name=coco     --data=yolov3/data/coco.yaml     --batch-size=1     --steps=5     --name=adptiveisp     --save_image     --save_param
+python yolov3/val_adaptiveisp.py     --project=results     --isp_weights=pretrained/DynamicISP_iter_lod_20000.pth     --data_name=coco     --data=yolov3/data/coco.yaml     --batch-size=1     --steps=5     --name=adptiveisp     --save_image     --save_param
+python yolov3/val_adaptiveisp.py     --project=results     --isp_weights=pretrained/DynamicISP_iter_lod_30000.pth     --data_name=coco     --data=yolov3/data/coco.yaml     --batch-size=1     --steps=5     --name=adptiveisp     --save_image     --save_param
+python yolov3/val_adaptiveisp.py     --project=results     --isp_weights=pretrained/DynamicISP_iter_lod_40000.pth     --data_name=coco     --data=yolov3/data/coco.yaml     --batch-size=1     --steps=5     --name=adptiveisp     --save_image     --save_param
+

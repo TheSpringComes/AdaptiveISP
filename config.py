@@ -54,6 +54,9 @@ cfg.filter_usage_penalty = 1.0
 cfg.use_TD = True
 # Replay memory
 cfg.replay_memory_size = 128
+# Force-inject a portion of fresh dataset samples into replay memory each update.
+# This improves whole-dataset coverage and avoids training on a stale small subset.
+cfg.fresh_raw_ratio = 0.25
 # Note, a trajectory will be killed either after achieving this value (by chance) or submission
 # Thus exploration will lead to kills as well.
 cfg.maximum_trajectory_length = 7

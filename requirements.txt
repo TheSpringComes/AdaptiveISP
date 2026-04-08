@@ -34,7 +34,7 @@ facexlib==0.3.0
 filterpy==1.4.5
 fonttools==4.51.0
 Forward_Warp==0.0.1
-forward_warp_cuda==0.0.0
+# forward_warp_cuda==0.0.0
 frozenlist==1.4.1
 fsspec==2024.3.1
 ftfy==6.2.0
@@ -67,7 +67,7 @@ markdown-it-py==3.0.0
 matplotlib==3.8.4
 matplotlib-inline==0.1.7
 mdurl==0.1.2
-meshzoo==0.11.6
+meshzoo
 mkl-service==2.4.0
 mmengine==0.10.4
 moviepy==1.0.3
@@ -99,7 +99,7 @@ pyiqa==0.1.11
 pymoo==0.6.1.1
 pyparsing==3.1.2
 python-dateutil==2.9.0.post0
-python-package-info==0.0.9
+python-package-info
 pytorch-lightning==2.3.3
 pytz==2024.1
 PyYAML==6.0.1
@@ -118,7 +118,7 @@ shapely==2.0.4
 six==1.16.0
 sk-video==1.1.10
 stack-data==0.6.3
-stonefish-license-manager==0.4.36
+stonefish-license-manager
 tabulate==0.9.0
 tensorboard==2.16.2
 tensorboard-data-server==0.7.2

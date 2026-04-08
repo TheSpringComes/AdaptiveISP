@@ -109,6 +109,12 @@ class DynamicISP:
         ckpt = torch.load(weights, map_location='cpu')  # load checkpoint to CPU to avoid CUDA memory leak
         yolo_model = Model(args.yolo_cfg or ckpt['model'].yaml, ch=3, nc=nc, anchors=hyp.get('anchors')).to(
             self.device)  # create
+
+
+        print(yolo_model)
+        n_params = sum(p.numel() for p in yolo_model.parameters())
+        print(f"Number of parameters: {n_params/1e6:.2f}M")
+
         exclude = ['anchor'] if (args.yolo_cfg or hyp.get('anchors')) and not resume else []  # exclude keys
         csd = ckpt['model'].float().state_dict()  # checkpoint state_dict as FP32
         csd = intersect_dicts(csd, yolo_model.state_dict(), exclude=exclude)  # intersect
@@ -152,6 +158,16 @@ class DynamicISP:
 
         self.agent = Agent(cfg, shape=(6 + len(cfg.filters), 64, 64)).to(self.device)
         self.value = Value(cfg, shape=(9 + len(cfg.filters), 64, 64)).to(self.device)
+
+
+        print("Agent Model: ", self.agent)
+        n_params = sum(p.numel() for p in self.agent.parameters())
+        print(f"Number of Agent parameters: {n_params/1e6:.2f}M")
+
+        print("Value Model: ", self.value)
+        n_params = sum(p.numel() for p in self.value.parameters())
+        print(f"Number of Value parameters: {n_params/1e6:.2f}M")
+
         self.args = args
         cfg.max_iter_step = int(self.args.epochs * 1000 // args.batch_size)  # 1000 train images
         if cfg.show_img_num > args.batch_size:
@@ -371,7 +387,8 @@ class DynamicISP:
             # callbacks.run('on_train_batch_end', self.a, ni, imgs, targets, paths, list(mloss))
 
             # update data pool
-            if torch.isnan(retouch).any() or torch.isinf(retouch).any() or torch.mean(retouch) < 0.01 or torch.mean(retouch) > self.max_bri:
+            # if torch.isnan(retouch).any() or torch.isinf(retouch).any() or torch.mean(retouch) < 0.01 or torch.mean(retouch) > self.max_bri:
+            if torch.isnan(retouch).any() or torch.isinf(retouch).any():
                 print("retouch is nan or inf", torch.mean(retouch).detach().cpu().numpy())
                 self.train_loader.fill_pool()
             else:
@@ -616,7 +633,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", type=str, default='train_val', help="train, train and val, val")
-    parser.add_argument("--batch_size", type=int, default=2, help="batch size")
+    parser.add_argument("--batch_size", type=int, default=4, help="batch size")
     parser.add_argument("--epochs", type=int, default=800, help="epochs")
     parser.add_argument("--patience", type=int, default=20, help="early stopping patience")
     parser.add_argument("--lr", type=float, default=3e-5, help="learning rate")
@@ -625,13 +642,13 @@ if __name__ == "__main__":
     parser.add_argument("--imgsz", type=int, default=512, help="image size")
     parser.add_argument("--workers", type=int, default=4, help="workers")
     
-    parser.add_argument('--weights', type=str, default='../../pretrained/yolov3.pt', help='yolov3 pretrained path')
+    parser.add_argument('--weights', type=str, default='pretrained/yolov3.pt', help='yolov3 pretrained path')
     parser.add_argument('--yolo_cfg', type=str, default='yolov3/models/yolov3.yaml', help='model.yaml path')
     parser.add_argument('--hyp', type=str, default='yolov3/data/hyps/hyp.scratch-low.yaml', help='hyperparameters path')
 
     parser.add_argument("--save_path", type=str, default='adaptiveisp', help="save path at experiments/save_path/")
-    parser.add_argument("--data_name", type=str, default='lod', choices=['lod', ], help="train data: lod")
-    parser.add_argument('--data_cfg', type=str, default='yolov3/data/lod.yaml', help='dataset.yaml path')
+    parser.add_argument("--data_name", type=str, default='coco', choices=['lod', 'coco'], help="train data name")
+    parser.add_argument('--data_cfg', type=str, default='yolov3/data/coco_synraw.yaml', help='dataset.yaml path')
     parser.add_argument("--add_noise", type=bool, default=False, help="add_noise")
     parser.add_argument("--use_linear", action='store_true', default=False, help="use linear noise distribution")
     parser.add_argument("--bri_range", type=float, default=None, nargs='*', help="brightness range, (low, high), 0.0~1.0")

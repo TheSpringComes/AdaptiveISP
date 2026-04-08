@@ -59,7 +59,9 @@ class ReplayMemory:
                  use_linear=False):
         self.cfg = cfg
         if data_name == "coco":
-            self.dataset = LoadImagesAndLabelsRAWReplay(
+            # SynRAW pipeline (enabled): COCO is already preprocessed to SynRAW.
+            # Keep normalized image loading and DO NOT unprocess again.
+            self.dataset = LoadImagesAndLabelsNormalizeReplay(
                 path,
                 imgsz,
                 batch_size,
@@ -73,11 +75,27 @@ class ReplayMemory:
                 image_weights=image_weights,
                 prefix=prefix,
                 limit=limit,
-                add_noise=add_noise,
-                brightness_range=brightness_range,
-                noise_level=noise_level,
-                use_linear=use_linear,
             )
+            # Original COCO RAW-on-the-fly pipeline (disabled intentionally):
+            # self.dataset = LoadImagesAndLabelsRAWReplay(
+            #     path,
+            #     imgsz,
+            #     batch_size,
+            #     augment=augment,
+            #     hyp=hyp,
+            #     rect=rect,
+            #     cache_images=cache,
+            #     single_cls=single_cls,
+            #     stride=int(stride),
+            #     pad=pad,
+            #     image_weights=image_weights,
+            #     prefix=prefix,
+            #     limit=limit,
+            #     add_noise=add_noise,
+            #     brightness_range=brightness_range,
+            #     noise_level=noise_level,
+            #     use_linear=use_linear,
+            # )
         elif data_name in ("lod", "oprd", "rod"):
             self.dataset = LoadImagesAndLabelsNormalizeReplay(
                 path,
@@ -168,13 +186,26 @@ class ReplayMemory:
 
     # Note, we add finished images since the discriminator needs them for training.
     def replace_memory(self, new_images):
-        random.shuffle(self.image_pool)
-        # Insert only PART of new images
+        # Keep old memory, filtered new trajectories, and force-injected fresh samples.
+        mixed_pool = list(self.image_pool)
+
+        # Insert only PART of new trajectories.
         for r in new_images:
             if r.state[STATE_STEP_DIM] < self.cfg.maximum_trajectory_length or random.random(
             ) < self.cfg.over_length_keep_prob:
-                self.image_pool.append(r)
-        # ... and add some brand-new RAW images
+                mixed_pool.append(r)
+
+        # Force-inject fresh samples from the full dataset for better coverage.
+        fresh_ratio = float(getattr(self.cfg, "fresh_raw_ratio", 0.0))
+        fresh_n = int(self.target_pool_size * max(fresh_ratio, 0.0))
+        if fresh_n > 0:
+            images, labels, paths, shapes, states = self.get_next_RAW(fresh_n)
+            mixed_pool.extend(self.images_and_states_to_records(images, labels, paths, shapes, states))
+
+        random.shuffle(mixed_pool)
+        self.image_pool = mixed_pool[:self.target_pool_size]
+
+        # Backfill if pool is still short.
         self.fill_pool()
         random.shuffle(self.image_pool)
 
