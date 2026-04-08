@@ -215,20 +215,31 @@ def run(
         pad, rect = (0.0, False)
         task = task if task in ('train', 'val', 'test') else 'val'  # path to train/val/test images
         if data_name == "coco":
-            dataloader = create_dataloader(data[task],
-                                           imgsz,
-                                           batch_size,
-                                           stride,
-                                           single_cls,
-                                           pad=pad,
-                                           rect=rect,
-                                           workers=workers,
-                                           prefix=colorstr(f'{task}: '),
-                                           add_noise=add_noise,
-                                           brightness_range=bri_range,
-                                           noise_level=noise_level,
-                                           use_linear=use_linear,
-                                        )[0]
+            # SynRAW pipeline (enabled): COCO images are already preprocessed.
+            # Use normalized loader and DO NOT unprocess RAW/noise on-the-fly.
+            dataloader = create_dataloader_real(data[task],
+                                                imgsz,
+                                                batch_size,
+                                                stride,
+                                                single_cls,
+                                                pad=pad,
+                                                rect=rect,
+                                                workers=workers,
+                                                prefix=colorstr(f'{task}: '))[0]
+            # Original COCO RAW-on-the-fly pipeline (disabled intentionally):
+            # dataloader = create_dataloader(data[task],
+            #                                imgsz,
+            #                                batch_size,
+            #                                stride,
+            #                                single_cls,
+            #                                pad=pad,
+            #                                rect=rect,
+            #                                workers=workers,
+            #                                prefix=colorstr(f'{task}: '),
+            #                                add_noise=add_noise,
+            #                                brightness_range=bri_range,
+            #                                noise_level=noise_level,
+            #                                use_linear=use_linear)[0]
         elif data_name in ('lod', 'oprd', 'rod'):
             dataloader = create_dataloader_real(data[task],
                                                 imgsz,
@@ -462,7 +473,7 @@ def run(
 
 def parse_opt():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--weights', nargs='+', type=str, default='../../pretrained/yolov3.pt', help='model path(s)')
+    parser.add_argument('--weights', nargs='+', type=str, default='pretrained/yolov3.pt', help='model path(s)')
     parser.add_argument('--batch-size', type=int, default=1, help='batch size')
     parser.add_argument('--imgsz', '--img', '--img-size', type=int, default=512, help='inference size (pixels)')  # 640
     parser.add_argument('--conf-thres', type=float, default=0.001, help='confidence threshold')
@@ -478,7 +489,7 @@ def parse_opt():
     parser.add_argument('--save-hybrid', action='store_true', help='save label+prediction hybrid results to *.txt')
     parser.add_argument('--save-conf', action='store_true', help='save confidences in --save-txt labels')
     parser.add_argument('--save-json', action='store_true', help='save a COCO-JSON results file')
-    parser.add_argument('--project', default=ROOT / 'adaptiveisp_val', help='save to project/name')
+    parser.add_argument('--project', default='val_results', help='save to project/name')
     parser.add_argument('--name', default='val', help='save to project/name')
     parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
     parser.add_argument('--half', action='store_true', help='use FP16 half-precision inference')
@@ -486,9 +497,9 @@ def parse_opt():
     parser.add_argument('--isp_model', default='Agent', help='isp_model model')
     parser.add_argument('--isp_weights', default='experiments/xxx.pth', help='isp_weights')
     parser.add_argument('--steps', default=5, type=int, help='run step')
-    parser.add_argument('--data_name', default="lod", choices=["lod", ], type=str, help='data name')
-    parser.add_argument('--data', type=str, default=ROOT / 'data/lod.yaml', help='dataset.yaml path')
-    parser.add_argument('--add_noise', default=True, type=bool, help='add noise')
+    parser.add_argument('--data_name', default="coco", choices=["lod", "coco"], type=str, help='data name')
+    parser.add_argument('--data', type=str, default=ROOT / 'data/coco_synraw.yaml', help='dataset.yaml path')
+    parser.add_argument('--add_noise', default=False, type=bool, help='add noise')
     parser.add_argument("--bri_range", type=float, default=None, nargs='*', help="brightness range, (low, high), 0.0~1.0")
     parser.add_argument("--noise_level", type=float, default=None, help="noise_level, 0.001~0.012")
     parser.add_argument("--save_image", action='store_true', help="save image results")
