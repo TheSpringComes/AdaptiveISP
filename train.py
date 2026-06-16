@@ -35,6 +35,7 @@ from util import make_image_grid, Tee, merge_dict, Dict, save_img
 from util import STATE_DROPOUT_BEGIN, STATE_REWARD_DIM, STATE_STEP_DIM, STATE_STOPPED_DIM
 from agent import Agent
 from value import Value
+from posterior_info import posterior_information_reward
 # from config import cfg
 from dataloader import get_noise, get_initial_states, create_dataloader_real_hr
 
@@ -281,13 +282,17 @@ class DynamicISP:
             detect_input_loss = torch.clip(detect_input_loss * self.cfg.detect_loss_weight, 0, 1.0)
 
             pred_retouch = self.yolo_model(retouch)
+            post_stats = posterior_information_reward(
+                pred_retouch, beta=self.args.posterior_beta, topk=self.args.posterior_topk
+            )
             # detect_retouch_loss, detect_retouch_loss_items = compute_loss(pred_retouch, targets.to(self.device))  # loss scaled by batch_size
             _, detect_retouch_loss_items = compute_loss(pred_retouch, targets.to(self.device))  # loss scaled by batch_size
             detect_retouch_loss, _ = self.compute_loss_batch(compute_loss_batch, pred_retouch, feed_dict['label'], self.device)  # loss scaled by batch_size
             detect_retouch_loss = torch.clip(detect_retouch_loss * self.cfg.detect_loss_weight, 0, 1.0)
 
-            reward = (self.cfg.all_reward + (1 - self.cfg.all_reward) * stopped) * \
+            det_reward = (self.cfg.all_reward + (1 - self.cfg.all_reward) * stopped) * \
                      (detect_input_loss.detach() - detect_retouch_loss) * self.cfg.critic_logit_multiplier
+            reward = self.args.lambda_det * det_reward + self.args.lambda_info * post_stats.reward
             # print("reward.shape", reward.shape, detect_input_loss.shape, detect_retouch_loss.shape)
             if self.cfg.use_penalty:
                 reward -= penalty
@@ -325,6 +330,9 @@ class DynamicISP:
                     self.writer.add_scalar('agent_loss', agent_loss, global_step=iter)
                     self.writer.add_scalar('value_loss', value_loss, global_step=iter)
                     self.writer.add_scalar('detect_loss', detect_retouch_loss.mean(), global_step=iter)
+                    self.writer.add_scalar('reward/det_reward', det_reward.mean(), global_step=iter)
+                    for log_name, log_value in post_stats.as_log_dict().items():
+                        self.writer.add_scalar(log_name, log_value, global_step=iter)
                     self.writer.add_images('input', torch.clip(imgs[:self.cfg.show_img_num, ...], 0.0, 1.0), global_step=iter, dataformats="NCHW")
                     # self.writer.add_images('retouch', torch.clip(retouch[:self.cfg.show_img_num, ...], 0.0, 1.0), global_step=iter, dataformats="NCHW")
                 except Exception as e:
@@ -380,7 +388,10 @@ class DynamicISP:
                       f"instances: {targets.shape[0]:2d},",
                       f"agent lr: {agent_scheduler.get_lr()[0]:.4e},",
                       f"value lr: {value_scheduler.get_lr()[0]:.4e},",
-                      f"penalty: {penalty.mean().item():.4e}",
+                      f"penalty: {penalty.mean().item():.4e},",
+                      f"det_reward: {det_reward.mean().item():.4e},",
+                      f"post_reward: {post_stats.reward.mean().item():.4e},",
+                      f"h_det: {post_stats.h_det.mean().item():.4e},",
                       f"reward: {reward.mean().item():.4e}",
                 )
                 self.train_loader.debug()
@@ -657,6 +668,10 @@ if __name__ == "__main__":
     parser.add_argument('--use_truncated', type=bool, default=True, help='use_truncated')
     parser.add_argument("--runtime_penalty", action='store_true', default=False, help="use runtime penalty")
     parser.add_argument("--runtime_penalty_lambda", type=float, default=0.01, help="use runtime penalty lambda")
+    parser.add_argument("--lambda_det", type=float, default=1.0, help="weight for detection-loss improvement reward")
+    parser.add_argument("--lambda_info", type=float, default=0.25, help="weight for posterior-information reward")
+    parser.add_argument("--posterior_beta", type=float, default=1.0, help="objectness entropy weight in posterior-information reward")
+    parser.add_argument("--posterior_topk", type=int, default=1000, help="top objectness candidates used for posterior entropy; <=0 disables top-k")
     parser.add_argument('--resume', type=str, default=None, help='resume model weights')
 
     parser.add_argument('--model_weights', type=str, default='experiments/', help='isp model weight')
@@ -665,6 +680,8 @@ if __name__ == "__main__":
     parser.add_argument("--cfg", type=str, default="config", help="config py file")
 
     args = parser.parse_args()
+    if args.posterior_topk <= 0:
+        args.posterior_topk = None
     args.save_path = args.data_name + '-' + args.save_path
     if args.data_name in ("lod", ):
         args.add_noise = False
