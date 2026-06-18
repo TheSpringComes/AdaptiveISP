@@ -188,6 +188,31 @@ class DynamicISP:
 
         self.max_bri = 0.9 # 0.8
 
+    def progressive_detection_weight(self, progress):
+        if not getattr(self.cfg, 'progressive_reward', False):
+            return 1.0
+        span = self.cfg.reward_lambda_max - self.cfg.reward_lambda_min
+        return self.cfg.reward_lambda_min + span / (1.0 + math.exp(-self.cfg.reward_lambda_k * (progress - self.cfg.reward_lambda_t0)))
+
+    def image_quality_reward(self, image):
+        """Stable-image reward R_img used by SDI-Det.
+
+        The detector reward alone can exploit over-exposure or over-sharpening
+        during early RL.  This term discourages saturated pixels, severe
+        under-exposure and amplified high-frequency noise while keeping the
+        reward differentiable for policy/value learning.
+        """
+        luminance = 0.27 * image[:, 0:1] + 0.67 * image[:, 1:2] + 0.06 * image[:, 2:3]
+        mean_luma = torch.mean(luminance, dim=(1, 2, 3), keepdim=True)
+        brightness_penalty = torch.abs(mean_luma - self.cfg.target_brightness)
+        saturation_penalty = torch.mean(
+            torch.relu(image - self.cfg.over_exposure_threshold) ** 2,
+            dim=(1, 2, 3), keepdim=True,
+        )
+        smooth = torch.nn.functional.avg_pool2d(luminance, kernel_size=3, stride=1, padding=1)
+        noise_penalty = torch.mean(torch.abs(luminance - smooth), dim=(1, 2, 3), keepdim=True)
+        return -self.cfg.image_reward_weight * (brightness_penalty + saturation_penalty + noise_penalty)
+
     @staticmethod
     def compute_loss_batch(func, preds, targets, device):
         # for x in preds:
@@ -286,8 +311,11 @@ class DynamicISP:
             detect_retouch_loss, _ = self.compute_loss_batch(compute_loss_batch, pred_retouch, feed_dict['label'], self.device)  # loss scaled by batch_size
             detect_retouch_loss = torch.clip(detect_retouch_loss * self.cfg.detect_loss_weight, 0, 1.0)
 
-            reward = (self.cfg.all_reward + (1 - self.cfg.all_reward) * stopped) * \
-                     (detect_input_loss.detach() - detect_retouch_loss) * self.cfg.critic_logit_multiplier
+            det_reward = (self.cfg.all_reward + (1 - self.cfg.all_reward) * stopped) * \
+                         (detect_input_loss.detach() - detect_retouch_loss) * self.cfg.critic_logit_multiplier
+            img_reward = self.image_quality_reward(retouch)
+            det_lambda = self.progressive_detection_weight(progress)
+            reward = det_lambda * det_reward + (1.0 - det_lambda) * img_reward
             # print("reward.shape", reward.shape, detect_input_loss.shape, detect_retouch_loss.shape)
             if self.cfg.use_penalty:
                 reward -= penalty

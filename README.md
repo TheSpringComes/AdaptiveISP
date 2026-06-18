@@ -1,98 +1,118 @@
-# [NeurIPS2024] AdaptiveISP: Learning an Adaptive Image Signal Processor for Object Detection
-### [Project Page](https://openimaginglab.github.io/AdaptiveISP/) | [Paper](https://arxiv.org/pdf/2410.22939) | [Data (Baidu Drive)](https://pan.baidu.com/s/1J0tLRr4IcxPxogcoKKs3Hw?pwd=nips) | [Data (OneDrive)](https://1drv.ms/u/s!Aq1PSygduHX9czHB9WkUNUTUx8o?e=KURDwo) <br>
+# SDI-Det：基于软件定义成像的暗光目标检测
 
-Yujin Wang, Tianyi Xu, Fan Zhang, Tianfan Xue, Jinwei Gu <br><br>
+本仓库已由原始 **AdaptiveISP** 代码整理为报告《基于软件定义成像的暗光目标检测》对应的 **SDI-Det** 实现。SDI-Det 将暗光 RAW/线性图像输入、相机硬件控制代理、Camera ISP 参数搜索和 YOLO 目标检测反馈统一为闭环强化学习问题，使 RAW-to-RGB 成像过程直接服务于暗光检测性能。
 
-<p align="left" width="100%">
-    <img src="docs/teaser.png"  width="90%" >
-</p>
-    AdaptiveISP takes a raw image as input and automatically generates an optimal ISP pipeline $\{M_i\}$ and the associated ISP parameters $\{\Theta_i\}$ to maximize the detection performance for any given pre-trained object detection network with deep reinforcement learning. AdapativeISP achieved mAP@0.5 of 71.4 on the dataset LOD dataset, while a baseline method with a fixed ISP pipeline and optimized parameters can only achieve mAP@0.5 of 70.1. Note that AdaptiveISP predicts the ISP for the image captured under normal light requires a CCM module, while the ISP for the image captured under low light requires a Desaturation module.
+## 方法概览
 
-## Abstract
-Image Signal Processors (ISPs) convert raw sensor signals into digital images, which significantly influence the image quality and the performance of downstream computer vision tasks. 
-Designing an ISP pipeline and tuning ISP parameters are two key steps for building an imaging and vision system.
-To find optimal ISP configurations, recent works use deep neural networks as a proxy to search for ISP parameters or ISP pipelines. However, these methods are primarily designed to maximize the image quality, which are sub-optimal in the performance of high-level computer vision tasks such as detection, recognition, and tracking. Moreover, after training, the learned ISP pipelines are mostly fixed at the inference time, whose performance degrades in dynamic scenes. 
-To jointly optimize ISP structures and parameters, we propose AdaptiveISP, a task-driven and scene-adaptive ISP. 
-One key observation is that for the majority of input images, only a few processing modules are needed to improve the performance of downstream recognition tasks, and only a few inputs require more processing.
-Based on this, AdaptiveISP utilizes deep reinforcement learning to automatically generate an optimal ISP pipeline and the associated ISP parameters to maximize the detection performance. Experimental results show that AdaptiveISP not only surpasses the prior state-of-the-art methods for object detection but also dynamically manages the trade-off between detection performance and computational cost, especially suitable for scenes with large dynamic range variations.
+SDI-Det 的目标函数为：
 
-## Installation
-### Set up the python environment
-```
-conda create -n adaptiveisp python=3.10
-conda activate adaptiveisp
+\[
+(h^*, \theta^*) = \arg\max_{h,\theta} \mathcal{R}\left(D(I_\theta(x;h))\right)
+\]
+
+其中：
+
+- `h`：软件定义的相机硬件控制代理，包括曝光、增益、读出降噪和 ROI 局部结构增强；
+- `θ`：可调 Camera ISP 参数，包括曝光、Gamma、CCM、锐化、去噪、色调、对比度、饱和度和白平衡；
+- `D`：冻结的 YOLO 检测器；
+- `R`：由检测奖励、图像稳定性约束和计算代价共同构成的闭环奖励。
+
+相较于固定 ISP 或仅在 RGB 上做增强的方法，SDI-Det 在成像前端引入任务反馈，减少暗光场景中目标边界、弱纹理和局部对比度在传统 ISP 中被压缩或平滑的问题。
+
+## 与报告一致的代码改动
+
+- **硬件控制闭环**：新增 `HardwareControlFilter`，作为不可微相机硬件的可学习代理，用于模拟曝光时间、模拟/数字增益、读出降噪和 ROI 局部对比度控制。
+- **任务驱动奖励**：训练奖励从单一检测损失差值扩展为 `λ_t R_det + (1-λ_t) R_img - β R_cost`，同时约束过曝、欠曝和噪声放大。
+- **渐进式奖励调度**：训练早期更强调稳定成像，后期逐渐提高检测奖励权重，降低 RL 早期过曝、过锐化或异常色调映射带来的不稳定。
+- **分组搜索约束**：将动作空间划分为硬件/曝光、细节、颜色和色调四组，Agent 每个决策步只在一个功能组内搜索，从而降低高维 ISP 参数空间的采样成本。
+- **README 更新**：项目说明、训练命令和实验结果均改为 SDI-Det 报告设定。
+
+## 环境安装
+
+```bash
+conda create -n sdi-det python=3.10
+conda activate sdi-det
 conda install pytorch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 pytorch-cuda=11.8 -c pytorch -c nvidia
-
-git clone https://github.com/OpenImagingLab/AdaptiveISP.git
-cd AdaptiveISP
 pip install -r requirements.txt
 ```
 
-## Prepare Dataset
-1. Download the LOD dataset from [Baidu Drive](https://pan.baidu.com/s/1J0tLRr4IcxPxogcoKKs3Hw?pwd=nips) or [OneDrive](https://1drv.ms/u/s!Aq1PSygduHX9czHB9WkUNUTUx8o?e=KURDwo).
-2. Unzip the LOD, and modify the dataroot yolov3/data/lod.yaml
+## 数据准备
 
-## Training and Test
-### Training
-To train the AdaptiveISP model:
-1. Modify the dataroot yolov3/data/lod.yaml
-2. Training without runtime_penalty
-    ```bash
-    CUDA_VISIBLE_DEVICES=0 python train.py \
-        --batch_size=8 \
-        --data_name=lod \
-        --data_cfg=yolov3/data/lod.yaml \
-        --save_path=adaptive-isp
-    ```
-3. Training with runtime_penalty
-    ```bash
-    CUDA_VISIBLE_DEVICES=0 python train.py \
-        --batch_size=8 \
-        --add_noise=False \
-        --data_name=lod \
-        --data_cfg=yolov3/data/lod.yaml \
-        --save_path=adaptive-isp \
-        --runtime_penalty \
-        --runtime_penalty_lambda=5e-3
-    ```
+本项目支持报告中的低光 RAW/线性检测设置：
 
-### Test
-Test the AdaptiveISP model on the LOD dataset:
-1. Modify the data root yolov3/data/lod.yaml
-2. Download the pre-trained model and put it in pre-trained folder. 
+1. **LOD**：真实暗光检测数据集，修改 `yolov3/data/lod.yaml` 中的路径。
+2. **Raw COCO / COCO SynRAW**：由 COCO 通过逆 ISP 或合成 RAW 退化流程得到，修改 `yolov3/data/coco_synraw.yaml` 中的路径。
+3. **OnePlus**：真实手机传感器夜间场景，可按现有 YAML 模板添加数据路径。
 
-    - [ckpt-lod-df-1.0](https://github.com/OpenImagingLab/AdaptiveISP/releases/download/v1.0/ckpt-lod-df-0.98.pth): training with discount factor (1.0)
+## 训练
 
-    - [ckpt-lod-df-0.98](https://github.com/OpenImagingLab/AdaptiveISP/releases/download/v1.0/ckpt-lod-df-1.0.pth): training with discount factor (0.98)
+### LOD 真实暗光 RAW 设置
 
-    - [yolov3](https://github.com/OpenImagingLab/AdaptiveISP/releases/download/v1.0/yolov3.pt): pre-trained model on COCO
-
-2. Run
-    ```bash
-    CUDA_VISIBLE_DEVICES=0 python yolov3/val_adaptiveisp.py \
-        --project=results \
-        --isp_weights=pretrained/ckpt-lod-df-1.0.pth \
-        --data_name=lod \
-        --data=yolov3/data/lod.yaml \
-        --batch-size=1 \
-        --steps=5 \
-        --name=adptiveisp \
-        --save_image \
-        --save_param
-    ```
-
-## Citations
-```
-@article{wang2024adaptiveisp,
-      title={AdaptiveISP: Learning an Adaptive Image Signal Processor for Object Detection}, 
-      author={Yujin Wang and Tianyi Xu and Fan Zhang and Tianfan Xue and Jinwei Gu},
-      booktitle={Conference on Neural Information Processing Systems},
-      year={2024}
-}
+```bash
+CUDA_VISIBLE_DEVICES=0 python train.py \
+  --batch_size=8 \
+  --data_name=lod \
+  --data_cfg=yolov3/data/lod.yaml \
+  --save_path=sdi-det-lod \
+  --runtime_penalty \
+  --runtime_penalty_lambda=5e-3
 ```
 
-## Acknowledgements
-Related research projects and implementations. We thank the original authors for their excellent work.
-- [LODDataset](https://github.com/ying-fu/LODDataset)
+### Raw COCO / COCO SynRAW 设置
 
-- [YOLOv3](https://github.com/ultralytics/yolov3)
+```bash
+CUDA_VISIBLE_DEVICES=0 python train.py \
+  --batch_size=8 \
+  --data_name=coco \
+  --data_cfg=yolov3/data/coco_synraw.yaml \
+  --save_path=sdi-det-coco \
+  --add_noise=False
+```
+
+关键配置位于 `config.py`：
+
+- `cfg.progressive_reward`：是否启用渐进式奖励调度；
+- `cfg.reward_lambda_min/max/k/t0`：检测奖励权重的 Sigmoid 调度参数；
+- `cfg.use_grouped_search` 与 `cfg.action_groups`：是否启用分组动作搜索；
+- `cfg.hardware_*`：硬件控制代理的曝光、增益、读出降噪和 ROI 增强范围；
+- `cfg.filter_runtime_penalty`：是否启用计算代价惩罚。
+
+## 验证与可视化
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python yolov3/val_adaptiveisp.py \
+  --project=results \
+  --isp_weights=experiments/lod-sdi-det-lod/ckpt/DynamicISP_iter_*.pth \
+  --data_name=lod \
+  --data=yolov3/data/lod.yaml \
+  --batch-size=1 \
+  --steps=5 \
+  --name=sdi-det \
+  --save_image \
+  --save_param
+```
+
+验证脚本会保存每一步的成像结果、动作选择和 ISP 参数，便于分析 Agent 在暗光场景中如何在亮度、噪声、颜色和目标结构之间取得任务友好的折中。
+
+## 报告实验结果
+
+| 数据集 | Dark-YOLO | RAW-Adapter | AdaptiveISP | SDI-Det |
+| --- | ---: | ---: | ---: | ---: |
+| Raw COCO | 19.6 mAP | 22.0 mAP | 30.0 mAP | **36.5 mAP** |
+| LOD | 60.3 mAP | 61.5 mAP | 65.4 mAP | **71.4 mAP** |
+
+这些结果表明，暗光目标检测的性能瓶颈不仅存在于后端检测网络，也存在于相机成像前端。通过软件定义方式对硬件控制代理和 ISP 参数进行检测反馈式优化，可以从源头提升暗光目标的可检测性。
+
+## 代码结构
+
+```text
+config.py                 # SDI-Det 滤波器、奖励调度、硬件代理和分组搜索配置
+agent.py                  # 强化学习 Agent 与分组动作搜索
+train.py                  # 闭环训练、渐进式奖励、图像约束奖励
+isp/filters.py            # 硬件控制代理与 ISP 滤波器
+yolov3/                   # YOLO 检测器、验证和数据配置
+```
+
+## 致谢
+
+本项目基于 AdaptiveISP 与 Ultralytics YOLOv3 代码继续开发，用于复现报告中的软件定义成像暗光检测框架。

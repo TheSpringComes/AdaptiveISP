@@ -212,6 +212,54 @@ class Filter(torch.nn.Module):
         return canvas
 
 
+class HardwareControlFilter(Filter):
+    """Differentiable proxy for software-defined camera hardware controls.
+
+    Real exposure, analog/digital gain and readout choices are made before ISP and
+    are not directly available in an offline RAW benchmark.  SDI-Det therefore
+    uses this module as a hardware-in-the-loop proxy: it applies bounded
+    exposure/gain changes, a lightweight readout noise suppression term and a
+    task-oriented local contrast term before subsequent ISP filters are selected.
+    The learned parameters correspond to ``h`` in the report, while the remaining
+    filters correspond to ISP parameters ``theta``.
+    """
+
+    def __init__(self, cfg, predict=False):
+        Filter.__init__(self, cfg, 'H', 4, predict)
+
+    def filter_param_regressor(self, features):
+        exposure = tanh_range(-self.cfg.hardware_exposure_range, self.cfg.hardware_exposure_range, initial=0)(features[:, 0:1])
+        analog_gain = tanh_range(0.0, self.cfg.hardware_gain_range, initial=0)(features[:, 1:2])
+        readout_denoise = tanh01(features[:, 2:3]) * self.cfg.hardware_readout_denoise
+        roi_contrast = tanh_range(0.0, self.cfg.hardware_roi_contrast, initial=0)(features[:, 3:4])
+        return torch.cat([exposure, analog_gain, readout_denoise, roi_contrast], dim=1)
+
+    def process(self, img, param):
+        exposure, analog_gain, readout_denoise, roi_contrast = [param[:, i:i + 1, None, None] for i in range(4)]
+        gain = torch.exp(exposure * np.log(2)) * (1.0 + analog_gain)
+        out = img * gain
+
+        # Readout mode proxy: average pooling approximates a low-noise readout/binning
+        # path, mixed back with the original signal to avoid destroying details.
+        smooth = F.avg_pool2d(out, kernel_size=3, stride=1, padding=1)
+        out = lerp(out, smooth, readout_denoise)
+
+        # ROI/task-prior proxy: increase local contrast around structures that are
+        # likely useful for bounding-box localization.
+        local_mean = F.avg_pool2d(out, kernel_size=5, stride=1, padding=2)
+        out = out + roi_contrast * (out - local_mean)
+        return out
+
+    def visualize_filter(self, debug_info, canvas):
+        params = debug_info['filter_parameters'].detach().cpu().numpy()
+        text = 'H EV%+.1f G%.1f' % (params[0], params[1])
+        if canvas.shape[0] == 64:
+            cv2.rectangle(canvas, (5, 39), (60, 53), (1, 1, 1), cv2.FILLED)
+            cv2.putText(canvas, text, (6, 48), cv2.FONT_HERSHEY_SIMPLEX, 0.25, (0, 0, 0))
+        else:
+            self.draw_high_res_text(text, canvas)
+
+
 class ExposureFilter(Filter):
 
     def __init__(self, cfg, predict=False):

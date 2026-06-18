@@ -81,7 +81,7 @@ class Agent(nn.Module):
         self.fc1 = nn.Linear(cfg.feature_extractor_dims, cfg.fc1_size)
         self.lrelu = nn.LeakyReLU(negative_slope=0.2)
         self.fc2 = nn.Linear(cfg.fc1_size, len(self.filters))
-        self.softmax = nn.Softmax()
+        self.softmax = nn.Softmax(dim=1)
         self.down_sample = nn.AdaptiveAvgPool2d((shape[1], shape[2]))
         self.runtime = torch.tensor(cfg.filters_runtime, requires_grad=False).to(device)
 
@@ -123,10 +123,30 @@ class Agent(nn.Module):
         selector_features = self.lrelu(self.fc1(selector_features))
 
         # print('    selector features:', selector_features.shape)
-        pdf = self.softmax(self.fc2(selector_features)) + 1e-37
+        logits = self.fc2(selector_features)
+        if getattr(self.cfg, 'use_grouped_search', False):
+            groups = getattr(self.cfg, 'action_groups', [])
+            if groups:
+                # SDI-Det constrains the high-dimensional camera/ISP action space
+                # by enabling one functional group at each decision step.  This
+                # follows the report's exposure-gain, detail, color and tone
+                # decomposition and improves sampling efficiency without changing
+                # individual filter implementations.
+                step_ids = torch.remainder(states[:, STATE_STEP_DIM].long(), len(groups))
+                group_mask = torch.zeros_like(logits, dtype=torch.bool)
+                for group_id, indices in enumerate(groups):
+                    valid_indices = [idx for idx in indices if idx < logits.shape[1]]
+                    if valid_indices:
+                        group_mask[step_ids == group_id, valid_indices] = True
+                logits = logits.masked_fill(~group_mask, -1e9)
+        else:
+            group_mask = None
+        pdf = self.softmax(logits) + 1e-37
         # print('    pdf_filter', pdf[:, 1:].shape)
 
         pdf = pdf * (1 - self.cfg.exploration) + self.cfg.exploration * 1.0 / len(self.filters)
+        if getattr(self.cfg, 'use_grouped_search', False) and 'group_mask' in locals() and group_mask is not None:
+            pdf = pdf * group_mask.to(pdf.dtype)
         # pdf = tf.to_float(is_train) * tf.concat([pdf[:, :1], pdf[:, 1:] * states[:, STATE_DROPOUT_BEGIN:]], axis=1) \
         # + (1.0 - tf.to_float(is_train)) * pdf
         pdf = pdf / (torch.sum(pdf, dim=1, keepdim=True) + 1e-30)

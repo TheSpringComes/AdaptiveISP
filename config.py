@@ -17,11 +17,11 @@ cfg.critic_lr_mul = 1
 # Filter Parameters
 ###########################################################################
 cfg.filters = [
-    ExposureFilter, GammaFilter, CCMFilter, SharpenFilter, DenoiseFilter,
+    HardwareControlFilter, ExposureFilter, GammaFilter, CCMFilter, SharpenFilter, DenoiseFilter,
     ToneFilter, ContrastFilter, SaturationPlusFilter, WNBFilter, ImprovedWhiteBalanceFilter
 ]
 cfg.filter_runtime_penalty = False
-cfg.filters_runtime = [1.7, 2.0, 1.9, 6.3, 10, 2.7, 2.1, 2.0, 1.9, 1.7]
+cfg.filters_runtime = [2.4, 1.7, 2.0, 1.9, 6.3, 10, 2.7, 2.1, 2.0, 1.9, 1.7]
 cfg.filter_runtime_penalty_lambda = 0.01
 
 # Gamma = 1/x ~ x
@@ -36,6 +36,12 @@ cfg.usm_sharpen_range = (0.0, 2.0)  # wikipedia recommended sigma 0.5-2.0; amoun
 cfg.sharpen_range = (0.0, 10.0)
 cfg.ccm_range = (-2.0, 2.0)
 cfg.denoise_range = (0.0, 1.0)
+
+# Software-defined imaging hardware proxy parameters (h in the report).
+cfg.hardware_exposure_range = 2.0
+cfg.hardware_gain_range = 2.5
+cfg.hardware_readout_denoise = 0.45
+cfg.hardware_roi_contrast = 0.75
 
 cfg.masking = False
 cfg.minimum_strength = 0.3
@@ -70,6 +76,19 @@ cfg.exploration = 0.05
 cfg.exploration_penalty = 0.05
 cfg.early_stop_penalty = 1.0
 cfg.detect_loss_weight = 1.0
+# Progressive reward schedule: early training emphasizes stable images, later
+# training emphasizes detector feedback.
+cfg.progressive_reward = True
+cfg.reward_lambda_min = 0.25
+cfg.reward_lambda_max = 0.90
+cfg.reward_lambda_k = 12.0
+cfg.reward_lambda_t0 = 0.35
+cfg.image_reward_weight = 0.25
+cfg.target_brightness = 0.35
+cfg.over_exposure_threshold = 0.98
+# Grouped action search: hardware/exposure, denoise-sharpen, color, tone.
+cfg.use_grouped_search = True
+cfg.action_groups = [[0, 1], [4, 5], [3, 9, 10], [2, 6, 7, 8]]
 
 ###########################################################################
 # Agent, Value Network Parameters
