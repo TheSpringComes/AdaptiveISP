@@ -26,7 +26,14 @@ def tanh_range(l, r, initial=None):
     def get_activation(left, right, initial):
         def activation(x):
            if initial is not None:
-               bias = math.atanh(2 * (initial - left) / (right - left) - 1)
+               # Clamp into the open interval (-1, 1) so that ``initial == left``
+               # (or ``initial == right``) does not raise ``math.atanh`` domain
+               # errors.  One-sided ranges such as gain ``[0, R]`` with
+               # ``initial=0`` are common for the software-defined hardware
+               # proxy and should start at the (near-)neutral lower bound.
+               val = 2 * (initial - left) / (right - left) - 1
+               val = min(max(val, -1.0 + 1e-6), 1.0 - 1e-6)
+               bias = math.atanh(val)
            else:
                bias = 0
            return tanh01(x + bias) * (right - left) + left

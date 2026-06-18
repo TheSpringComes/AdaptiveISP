@@ -136,8 +136,19 @@ class Agent(nn.Module):
                 group_mask = torch.zeros_like(logits, dtype=torch.bool)
                 for group_id, indices in enumerate(groups):
                     valid_indices = [idx for idx in indices if idx < logits.shape[1]]
-                    if valid_indices:
-                        group_mask[step_ids == group_id, valid_indices] = True
+                    if not valid_indices:
+                        continue
+                    # Build a per-column mask and broadcast it onto the rows whose
+                    # current step maps to this group.  Indexing with a row boolean
+                    # mask and a column list at once broadcasts element-wise and
+                    # raises when their lengths differ, so assign the column vector
+                    # to the selected rows instead.
+                    row_mask = step_ids == group_id
+                    if not row_mask.any():
+                        continue
+                    col_mask = torch.zeros(logits.shape[1], dtype=torch.bool, device=logits.device)
+                    col_mask[valid_indices] = True
+                    group_mask[row_mask] = col_mask
                 logits = logits.masked_fill(~group_mask, -1e9)
         else:
             group_mask = None
@@ -150,7 +161,10 @@ class Agent(nn.Module):
         # pdf = tf.to_float(is_train) * tf.concat([pdf[:, :1], pdf[:, 1:] * states[:, STATE_DROPOUT_BEGIN:]], axis=1) \
         # + (1.0 - tf.to_float(is_train)) * pdf
         pdf = pdf / (torch.sum(pdf, dim=1, keepdim=True) + 1e-30)
-        entropy = -pdf * torch.log(pdf)
+        # With grouped action search most filters are masked out (pdf == 0).
+        # 0 * log(0) evaluates to 0 * -inf = nan, so clamp the log input; the
+        # zero-probability entries then contribute 0 to the entropy as intended.
+        entropy = -pdf * torch.log(pdf + 1e-12)
         entropy = torch.sum(entropy, dim=1)[:, None]
         # print('    pdf:', pdf.shape)
         # print('    entropy:', entropy.shape)

@@ -2,6 +2,7 @@ import pickle as pickle
 import os
 import shutil
 import datetime
+import math
 import cv2
 import numpy as np
 import yaml
@@ -211,7 +212,9 @@ class DynamicISP:
         )
         smooth = torch.nn.functional.avg_pool2d(luminance, kernel_size=3, stride=1, padding=1)
         noise_penalty = torch.mean(torch.abs(luminance - smooth), dim=(1, 2, 3), keepdim=True)
-        return -self.cfg.image_reward_weight * (brightness_penalty + saturation_penalty + noise_penalty)
+        # Reduce to a per-image scalar reward [B, 1] so it is consistent with the
+        # detection reward and the value/surrogate tensors used downstream.
+        return (-self.cfg.image_reward_weight * (brightness_penalty + saturation_penalty + noise_penalty)).reshape(image.shape[0], 1)
 
     @staticmethod
     def compute_loss_batch(func, preds, targets, device):
@@ -425,7 +428,7 @@ class DynamicISP:
                         retouch.detach().cpu().numpy(), feed_dict['label'], feed_dict['path'], feed_dict['shape'],
                         new_states.detach().cpu().numpy()))
             # validate
-            if iter % self.cfg.val_freq == 0:
+            if iter % self.cfg.val_freq == 0 and hasattr(self, 'val_loader'):
                 self.agent.eval()
                 self.yolo_model.eval()
                 feed_dict = self.val_loader
