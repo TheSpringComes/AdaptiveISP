@@ -17,7 +17,7 @@ from yolov3.utils.general import LOGGER
 from yolov3.utils.torch_utils import torch_distributed_zero_first
 from yolov3.utils.dataloaders import seed_worker
 
-from engine.dataset import LoadImagesAndLabelsRAW, LoadImagesAndLabelsNormalize, \
+from tasks.detection.dataset import LoadImagesAndLabelsRAW, LoadImagesAndLabelsNormalize, \
     LoadImagesAndLabelsNormalizeHR, LoadImagesAndLabelsRAWHR, LoadImagesAndLabelsROD
 
 LOCAL_RANK = int(os.getenv('LOCAL_RANK', -1))  # https://pytorch.org/docs/stable/elastic/run.html

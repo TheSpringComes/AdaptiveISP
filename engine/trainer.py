@@ -10,6 +10,7 @@ CLI entry lives in `tools/train.py`; this file is pure library code.
 from __future__ import annotations
 
 import datetime
+import logging
 import os
 import shutil
 
@@ -19,19 +20,22 @@ import torch
 import yaml
 from torch.utils.tensorboard import SummaryWriter
 
-# Importing `tasks` bootstraps sys.path so `yolov3.*` is discoverable.
+# `tasks.detection.implementations.yolov3` is our sole boundary to the vendored
+# yolov3 code; the trainer must not import yolov3.* directly.
 from tasks.base import TaskMetrics                                # noqa: F401
 from tasks.detection.implementations.yolov3 import YOLOv3Detection
-
-from yolov3.utils.callbacks import Callbacks
-from yolov3.utils.general import LOGGER, colorstr, check_dataset, check_img_size
 
 from controller.adaptiveisp import AdaptiveISPController, AdaptiveISPReward
 from isp.registry import build_operator
 from pipeline import PipelineExecutor, pipeline_state_from_replay, pipeline_state_to_replay
-from engine.replay import ReplayMemory, create_input_tensor
 from search import SearchSpace
+from tasks.detection.replay import ReplayMemory, create_input_tensor
 from engine.util import Tee
+
+
+logger = logging.getLogger(__name__)
+if not logger.hasHandlers():
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(name)s %(levelname)s: %(message)s')
 
 
 LOCAL_RANK = int(os.getenv('LOCAL_RANK', -1))
@@ -74,9 +78,10 @@ class Trainer:
         if isinstance(hyp, str):
             with open(hyp, errors='ignore') as f:
                 hyp = yaml.safe_load(f)
-        LOGGER.info(colorstr('hyperparameters: ') + ', '.join(f'{k}={v}' for k, v in hyp.items()))
+        LOGGER = logger
+        LOGGER.info('hyperparameters: ' + ', '.join(f'{k}={v}' for k, v in hyp.items()))
         args.hyp = hyp.copy()
-        data_dict = check_dataset(args.data_cfg)
+        data_dict = YOLOv3Detection.parse_data_cfg(args.data_cfg)
         nc = int(data_dict['nc'])
 
         # Downstream task
@@ -86,7 +91,7 @@ class Trainer:
             detect_loss_weight=cfg.detect_loss_weight,
         )
         gs = self.task_model.gs
-        args.imgsz = check_img_size(args.imgsz, gs, floor=gs * 2)
+        args.imgsz = self.task_model.align_imgsz(args.imgsz)
 
         # Data loaders (ReplayMemory holds partial-trajectory (image, state) pairs)
         train_path, val_path = data_dict['train'], data_dict['val']
@@ -94,13 +99,13 @@ class Trainer:
             val_path = data_dict['test']
         self.train_loader = ReplayMemory(cfg, train, train_path, args.imgsz, args.batch_size, gs,
                                           single_cls=False, hyp=hyp, augment=False, cache=False, pad=0.0,
-                                          rect=False, image_weights=False, prefix=colorstr('train: '), limit=-1,
+                                          rect=False, image_weights=False, prefix='train: ', limit=-1,
                                           add_noise=args.add_noise, data_name=args.data_name, brightness_range=args.bri_range,
                                           noise_level=args.noise_level, use_linear=args.use_linear)
         if val:
             self.val_loader = ReplayMemory(cfg, val, val_path, args.imgsz, args.batch_size, gs,
                                             single_cls=False, hyp=hyp, augment=False, cache=False, pad=0.0,
-                                            rect=False, image_weights=False, prefix=colorstr('val: '), limit=-1,
+                                            rect=False, image_weights=False, prefix='val: ', limit=-1,
                                             add_noise=args.add_noise, data_name=args.data_name, brightness_range=args.bri_range,
                                             noise_level=args.noise_level, use_linear=args.use_linear)
             self.val_loader = self.val_loader.get_feed_dict_and_states(8)
@@ -142,7 +147,8 @@ class Trainer:
         print(f"Number of Controller parameters: {n_params / 1e6:.2f}M")
 
         self.args = args
-        cfg.max_iter_step = int(self.args.epochs * 1000 // args.batch_size)
+        images_per_epoch = int(cfg.get('images_per_epoch', 1000))
+        cfg.max_iter_step = int(self.args.epochs * images_per_epoch // args.batch_size)
         if cfg.show_img_num > args.batch_size:
             cfg.show_img_num = args.batch_size
 
@@ -159,7 +165,12 @@ class Trainer:
             print(k, ":", v)
         self.cfg = cfg
 
-        self.max_bri = 0.9
+        train_cfg = cfg.get('train', {}) or {}
+        self.max_bri = float(train_cfg.get('bright_hi', 0.9))
+        self._bright_lo = float(train_cfg.get('bright_lo', 0.01))
+        self._grad_clip_norm = float(cfg.get('grad_clip_norm', 1e-5))
+        self._lr_decay = float(train_cfg.get('lr_decay', 0.1))
+        self._lr_segments = int(train_cfg.get('lr_segments', 3))
 
     def train(self) -> None:
         if self.args.resume is not None:
@@ -168,25 +179,22 @@ class Trainer:
             if 'controller_model' in ckpt:
                 self.controller.load_state_dict(ckpt['controller_model'])
             else:
-                LOGGER.warning(
+                logger.warning(
                     "Resume ckpt is legacy format; Controller has different "
                     "architecture — starting fresh."
                 )
 
         optim = torch.optim.Adam(self.controller.parameters(), lr=self.args.lr)
-        lr_decay = 0.1
-        segments = 3
+        lr_decay = self._lr_decay
+        segments = self._lr_segments
         max_iter_step = self.cfg.max_iter_step
         lr_lambda = lambda it: lr_decay ** (1.0 * it * segments / max_iter_step)
         scheduler = torch.optim.lr_scheduler.LambdaLR(optim, lr_lambda=lr_lambda)
         print(f"'init learning rate: {scheduler.get_last_lr()[0]}")
 
-        callbacks = Callbacks()
-        callbacks.run('on_train_start')
-
-        LOGGER.info(f'Image sizes {self.args.imgsz} train, {self.args.imgsz} val\n'
-                    f'Using {self.args.workers} dataloader workers\n'
-                    f"Logging results to {colorstr('bold', self.args.save_path)}\n"
+        logger.info(f'Image sizes {self.args.imgsz} train, {self.args.imgsz} val | '
+                    f'Using {self.args.workers} dataloader workers | '
+                    f'Logging results to {self.args.save_path} | '
                     f'Starting training for {0} epochs...')
         mloss_agent, mloss_value = 0.0, 0.0
         mloss_detect = np.zeros(3, dtype=np.float32)
@@ -230,7 +238,7 @@ class Trainer:
             stopped_after = state_after.stopped.float().unsqueeze(-1)
             if self.args.use_truncated:
                 retouch_mean = torch.mean(state_after.image, dim=(1, 2, 3)).unsqueeze(-1)
-                truncated = torch.where(0.01 < retouch_mean, 1.0, 0.0)
+                truncated = torch.where(self._bright_lo < retouch_mean, 1.0, 0.0)
                 truncated = torch.where(retouch_mean < self.max_bri, truncated, torch.zeros_like(truncated))
                 q_value = r + (1.0 - stopped_after) * self.cfg.discount_factor * new_value * (1.0 - truncated)
             else:
@@ -285,7 +293,7 @@ class Trainer:
 
             total_loss = value_loss + agent_loss
             total_loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.controller.parameters(), 1e-5)
+            torch.nn.utils.clip_grad_norm_(self.controller.parameters(), self._grad_clip_norm)
             optim.step()
             scheduler.step()
 

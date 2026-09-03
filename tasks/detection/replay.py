@@ -1,7 +1,7 @@
 import random
 import numpy as np
 from engine.util import Dict
-from engine.dataset import LoadImagesAndLabelsRAWReplay, LoadImagesAndLabelsNormalizeReplay
+from tasks.detection.dataset import LoadImagesAndLabelsRAWReplay, LoadImagesAndLabelsNormalizeReplay
 import torch
 
 

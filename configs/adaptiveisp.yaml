@@ -1,12 +1,21 @@
-# AdaptiveISP V1 config.
-# Loaded by engine.trainer._load_config → util.Dict. Runtime-derived fields
-# (num_state_dim, z_dim, max_iter_step, filter_runtime_penalty) are set by
-# the loader / trainer at construction time — see engine/trainer.py.
+# AdaptiveISP V1 config — sole source of truth for experiment-defining
+# parameters. `engine/trainer._load_config` reads this file into a Dict
+# and derives `num_state_dim` / `z_dim` / `max_iter_step` from the values
+# below.
+#
+# Split:
+#   - Fields under the top-level dict (backward-compat with the original
+#     paper config) are consumed directly by Trainer / Controller / Reward.
+#   - `train:` and `val:` name the CLI defaults so the experiment definition
+#     is one file; `tools/train.py` and `tools/val.py` treat these as
+#     defaults that CLI args (e.g. `--lr`, `--batch_size`) can override.
+#   - Environment / hardware knobs (`--workers`, `--seed`, `--weights` path,
+#     `--data_cfg` path) stay CLI-only; they do not define the experiment.
 
 # ---------- Operators ----------
 # Canonical order — matches isp.registry.CANONICAL_ORDER. Observation
-# channel layout, PipelineState op_usage columns, and Runtime dispatch all
-# key off this list.
+# channel layout, PipelineState op_usage columns, and PipelineExecutor
+# dispatch all key off this list.
 operators:
   - exposure
   - gamma
@@ -19,7 +28,7 @@ operators:
   - wnb
   - whitebalance
 
-# Runtime cost (per op, aligned with `operators` above). Consumed by
+# Runtime cost per op (aligned with `operators` above). Consumed by
 # AdaptiveISPReward when runtime_penalty_enabled=true.
 filters_runtime: [1.7, 2.0, 1.9, 6.3, 10.0, 2.7, 2.1, 2.0, 1.9, 1.7]
 filter_runtime_penalty: false            # overridden by --runtime_penalty
@@ -32,7 +41,7 @@ print_freq: 100
 summary_freq: 100
 show_img_num: 2
 
-# ---------- RL / TD ----------
+# ---------- RL / TD (Controller + Reward) ----------
 parameter_lr_mul: 1
 value_lr_mul: 1
 critic_lr_mul: 1
@@ -48,7 +57,8 @@ exploration_penalty: 0.05
 early_stop_penalty: 1.0
 detect_loss_weight: 1.0
 use_penalty: true
-test_steps: 5
+test_steps: 5                              # ISP rollout steps at train + val
+grad_clip_norm: 1.0e-05                    # gradient clipping norm on Controller
 
 # ---------- Controller network ----------
 base_channels: 32
@@ -59,7 +69,33 @@ feature_extractor_dims: 4096
 # ---------- Replay memory ----------
 replay_memory_size: 128
 fresh_raw_ratio: 0.25
+images_per_epoch: 1000                     # epoch definition; used by trainer to
+                                           # compute max_iter_step = epochs * this / batch
 
-# ---------- Latent noise (still consumed by replay for get_noise) ----------
+# ---------- Latent noise ----------
 z_type: uniform
 z_dim_per_filter: 16
+
+# ---------- Trainer defaults (tools/train.py --* args fall back to these) ----------
+train:
+  batch_size: 8                            # paper's headline recipe
+  epochs: 800                              # paper's headline recipe
+  lr: 3.0e-05
+  imgsz: 512
+  use_truncated: true
+  bright_lo: 0.01                          # min mean brightness to count sample as valid
+  bright_hi: 0.9                           # max mean brightness ("max_bri")
+  lr_decay: 0.1                            # LambdaLR base
+  lr_segments: 3                           # LambdaLR segment count
+
+# ---------- Validation defaults (tools/val.py) ----------
+val:
+  conf_thres: 0.001                        # NMS confidence cutoff (vendored yolov3 default)
+  iou_thres: 0.6                           # NMS IoU threshold
+  max_det: 300                             # max detections per image after NMS
+  imgsz: 512                               # eval image size
+
+# ---------- Task-model constants (informational; wired via YOLOv3Detection) ----------
+task_model:
+  base_nc: 80                              # COCO class count used to scale hyp['cls']
+  reference_imgsz: 640                     # baseline imgsz used to scale hyp['obj']

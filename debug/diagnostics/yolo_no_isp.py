@@ -26,7 +26,7 @@ from tqdm import tqdm
 import tasks  # noqa: F401  bootstrap yolov3 sys.path
 sys.path.insert(0, os.path.join(_ROOT, "tasks", "third_party", "yolov3"))
 
-from engine.dataloader import create_dataloader_real_hr
+from tasks.detection.dataloader import create_dataloader_real_hr
 from yolov3.models.experimental import attempt_load
 from yolov3.utils.general import (
     TQDM_BAR_FORMAT, colorstr, non_max_suppression, scale_boxes, xywh2xyxy,

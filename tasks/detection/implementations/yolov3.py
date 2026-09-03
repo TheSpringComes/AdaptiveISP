@@ -88,6 +88,23 @@ class YOLOv3Detection(Task):
     def attach_names(self, names) -> None:
         self.model.names = names
 
+    # -----------------------------------------------------------------
+    # Static helpers that isolate yolov3 utilities from the rest of the
+    # framework. Engine / Controller / Reward / Pipeline call these
+    # instead of importing yolov3.* directly.
+    # -----------------------------------------------------------------
+
+    @staticmethod
+    def parse_data_cfg(yaml_path: str) -> dict:
+        """Parse a yolov3-style dataset yaml. Returns dict with keys train/val/test/names/nc/path."""
+        from yolov3.utils.general import check_dataset
+        return check_dataset(yaml_path)
+
+    def align_imgsz(self, imgsz: int, floor_factor: int = 2) -> int:
+        """Round imgsz to a multiple of the detector's grid stride."""
+        from yolov3.utils.general import check_img_size
+        return check_img_size(imgsz, self.gs, floor=self.gs * floor_factor)
+
     def train(self) -> "YOLOv3Detection":
         self.model.train()
         self._freeze_and_eval_bn()
