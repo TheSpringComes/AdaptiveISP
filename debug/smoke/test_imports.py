@@ -1,0 +1,39 @@
+"""smoke: imports + registry population.
+
+If this passes, all V1 modules load and the operator registry is
+populated. Anything else in smoke/ can rely on this.
+"""
+from __future__ import annotations
+
+import os
+import sys
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+
+def test_imports() -> None:
+    import tasks  # noqa: F401  bootstraps yolov3 sys.path
+
+    from isp.base import ISPOperator, ParameterSpec, tanh_range, rgb2lum, rgb2hsv, hsv2rgb, lerp
+    from isp.registry import OPERATORS, register, build_operator, CANONICAL_ORDER
+    from isp.operators import exposure, gamma, ccm, sharpen, denoise, tone, contrast, saturation, wnb, whitebalance   # noqa: F401
+
+    from pipeline import PipelineState, ISPAction, PipelineExecutor, pipeline_state_from_replay, pipeline_state_to_replay   # noqa: F401
+    from search import SearchSpace, ConstraintResult   # noqa: F401
+    from controller import Controller, ControllerOutput   # noqa: F401
+    from controller.adaptiveisp import AdaptiveISPController, AdaptiveISPValueNet, FeatureExtractor, AdaptiveISPReward, Reward, RewardBreakdown   # noqa: F401
+    from tasks.base import Task, TaskMetrics   # noqa: F401
+    from tasks.detection.implementations.yolov3 import YOLOv3Detection   # noqa: F401
+    from engine.trainer import Trainer   # noqa: F401
+    from engine.util import set_seed   # noqa: F401
+
+    assert set(CANONICAL_ORDER) == set(OPERATORS.keys()), \
+        f"registry mismatch: CANONICAL_ORDER={CANONICAL_ORDER} vs OPERATORS={sorted(OPERATORS.keys())}"
+    assert len(OPERATORS) == 10, f"expected 10 operators, got {len(OPERATORS)}"
+
+
+if __name__ == "__main__":
+    test_imports()
+    print("smoke/test_imports: PASS")
