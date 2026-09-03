@@ -22,7 +22,8 @@ from engine.util import set_seed
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--task", type=str, default='train_val', help="train, train and val, val")
+    parser.add_argument("--task", type=str, default='train_val', choices=['train', 'train_val'],
+                        help="train, or train and val (val-mode mAP eval lives in tools/val.py)")
     parser.add_argument("--batch_size", type=int, default=4, help="batch size")
     parser.add_argument("--epochs", type=int, default=800, help="epochs")
     parser.add_argument("--patience", type=int, default=20, help="early stopping patience (unused: dead code)")
@@ -65,17 +66,11 @@ def main() -> None:
         args.bri_range = None
         args.use_linear = False
 
-    set_seed(args.seed, deterministic=not args.nondeterministic)
+    # set_seed(args.seed, deterministic=not args.nondeterministic)
 
     from engine.trainer import Trainer
     trainer = Trainer(args, args.task)
-    if args.task in ("train", "train_val"):
-        trainer.train()
-    elif args.task == "val":
-        raise SystemExit(
-            "--task val was removed: use `python tools/val.py --isp_weights <ckpt> ...` "
-            "for mAP evaluation."
-        )
+    trainer.train()
 
 
 if __name__ == "__main__":
