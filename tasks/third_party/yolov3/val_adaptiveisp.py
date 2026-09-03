@@ -207,7 +207,7 @@ def run(
                 )
             from isp.registry import build_operator
             from controller.adaptiveisp import AdaptiveISPController
-            from pipeline import Runtime, pipeline_state_from_replay
+            from pipeline import PipelineExecutor, pipeline_state_from_replay
             from search import SearchSpace
             ops = {n: build_operator(n).to(device) for n in cfg.operators}
             isp_model = AdaptiveISPController(
@@ -218,7 +218,7 @@ def run(
                 exploration=cfg.exploration, max_steps=cfg.test_steps,
             ).to(device)
             isp_model.load_state_dict(ckpt_data['controller_model'])
-            isp_runtime = Runtime(ops, cfg.operators)
+            isp_runtime = PipelineExecutor(ops, cfg.operators)
             isp_search_space = SearchSpace(ops, cfg.operators)
             filter_name = list(cfg.operators)
             isp_variant = "controller"
@@ -327,7 +327,7 @@ def run(
             param_result_dict["pipeline"] = []
             with dt[1]:
                 if isp_variant == "controller":
-                    # V1 path: Controller.act -> Runtime.step
+                    # V1 path: Controller.act Executor.step
                     initial_states = torch.from_numpy(
                         get_initial_states(nb, 3 + len(cfg.operators), len(cfg.operators))
                     ).to(device)

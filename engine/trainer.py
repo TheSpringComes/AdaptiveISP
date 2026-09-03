@@ -350,7 +350,7 @@ def _load_config(path: str):
 
     Returns a util.Dict for dot-attribute access, with derived fields computed.
     """
-    from util import Dict
+    from engine.util import Dict
 
     if path.endswith(".yaml") or path.endswith(".yml"):
         with open(path, "r") as f:

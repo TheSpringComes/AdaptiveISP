@@ -4,10 +4,16 @@ Answers "how does the whole experiment run?" — assembles the four subsystems
 (isp / search / controller / pipeline / tasks) into a training or eval loop.
 
 Files:
-    runner.py     — high-level dispatch (train / val / test)
-    trainer.py    — Trainer class (was DynamicISP)
-    evaluator.py  — Evaluator (defers to tools/val.py for mAP)
-"""
-from engine.trainer import Trainer
+    trainer.py    Trainer class (was DynamicISP)
+    runner.py     high-level dispatch (train / val / test)
+    util.py       small shared utilities (set_seed, Tee, Dict, AsyncTaskManager, ...)
 
-__all__ = ["Trainer"]
+NOTE: This __init__ deliberately does NOT eagerly import Trainer. Doing so
+creates a circular import when tasks/detection/dataset.py imports
+engine.util.AsyncTaskManager — Python starts loading engine/__init__.py,
+which reaches into Trainer, which imports tasks.detection.replay, which
+imports tasks.detection.dataset (still in the middle of its own load).
+
+Callers should import specifically: `from engine.trainer import Trainer`
+or `from engine.util import set_seed`.
+"""
