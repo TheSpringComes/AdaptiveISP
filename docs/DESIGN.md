@@ -182,7 +182,7 @@ Reward 独立接收 `TaskMetrics + Pipeline State/Cost`，V1 完整保留原 Ada
 | `util.py:15` `STATE_*` 常量 | state layout | **PipelineExecutor** PipelineState schema | 替换为 dataclass |
 | `util.py:58` `enrich_image_input` | image ⊕ state 拼接 | **Controller** 内部（observation 构造） | |
 | `dataset.py`, `dataloader.py`, `COCO_Syn_preprocess.py` | 数据 | 数据侧 | 保留 |
-| `yolov3/val_adaptiveisp.py`, `yolov3/gt.py` | eval 入口 | **Task Adapter** eval 端 | |
+| `yolov3/val_adaptiveisp.py`, `yolov3/gt.py` | eval 入口（原仓库） | 重写为 `engine/evaluator.py`（`tools/val.py` 是入口），原文件已从 vendored 目录删除 | |
 
 ---
 

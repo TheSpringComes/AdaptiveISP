@@ -25,9 +25,15 @@ Each change is a compatibility or boundary patch, not an algorithmic edit.
 | File | Change | Reason |
 |---|---|---|
 | `models/experimental.py` | `torch.load(..., weights_only=False)` at the `attempt_load` call site | torch ≥ 2.6 flipped the `torch.load` default to `True`; the vendored YOLO checkpoint is a pickle containing custom class references and cannot be loaded under the new default |
-| `val_adaptiveisp.py` | (i) added `weights_only=False` at the ISP-checkpoint load site; (ii) added a Controller-checkpoint branch that builds `AdaptiveISPController` when the ckpt has a `controller_model` key (the pre-refactor `agent_model` path was removed); (iii) added a yaml-config branch that dispatches to `engine.trainer._load_config` when `--cfg_file` ends in `.yaml`; (iv) updated our-side imports (`from engine.util`, `from tasks.detection.dataloader`, `from isp.registry`, `from controller.adaptiveisp`, `from pipeline`, `from search`) to match the V1 layout | V1 refactor introduced a new checkpoint schema and Python-package layout |
 | `data/coco_synraw.yaml` | `path:` changed from a relative-to-yolov3-ROOT layout to the absolute local dataset path | The vendored `check_dataset` resolves paths against yolov3's own `ROOT`, which no longer matches this machine's dataset layout after the repository move |
 | `data/lod.yaml` | same as `coco_synraw.yaml` | same |
+
+## Files removed from the upstream snapshot
+
+| File | Reason |
+|---|---|
+| `val_adaptiveisp.py` | Reimplemented as `engine/evaluator.py` (with `tools/val.py` as the entry point). The rewrite reads pure-function utilities (`non_max_suppression`, `ap_per_class`, `box_iou`, `scale_boxes`, `xywh2xyxy`) from `yolov3.utils.{general,metrics}` but owns the full val loop. Regression: mAP@0.5 = 71.60 on both the deleted script and the rewrite, bit-identical. |
+| `gt.py` | Not on the call path from any framework module (only referenced by the deleted `val_adaptiveisp.py`). |
 
 ## Checkpoint provenance
 

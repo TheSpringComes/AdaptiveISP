@@ -15,7 +15,7 @@ def run(args, task: str = "train_val") -> None:
     elif task == "val":
         raise NotImplementedError(
             "--task val is served by tools/val.py, which wraps "
-            "yolov3/val_adaptiveisp.py for mAP computation."
+            "tools/val.py (implementation in engine.evaluator) for mAP computation."
         )
     else:
         raise ValueError(f"unknown task: {task}")
