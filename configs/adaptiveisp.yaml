@@ -1,0 +1,65 @@
+# AdaptiveISP V1 config.
+# Loaded by engine.trainer._load_config → util.Dict. Runtime-derived fields
+# (num_state_dim, z_dim, max_iter_step, filter_runtime_penalty) are set by
+# the loader / trainer at construction time — see engine/trainer.py.
+
+# ---------- Operators ----------
+# Canonical order — matches isp.registry.CANONICAL_ORDER. Observation
+# channel layout, PipelineState op_usage columns, and Runtime dispatch all
+# key off this list.
+operators:
+  - exposure
+  - gamma
+  - ccm
+  - sharpen
+  - denoise
+  - tone
+  - contrast
+  - saturation
+  - wnb
+  - whitebalance
+
+# Runtime cost (per op, aligned with `operators` above). Consumed by
+# AdaptiveISPReward when runtime_penalty_enabled=true.
+filters_runtime: [1.7, 2.0, 1.9, 6.3, 10.0, 2.7, 2.1, 2.0, 1.9, 1.7]
+filter_runtime_penalty: false            # overridden by --runtime_penalty
+filter_runtime_penalty_lambda: 0.01
+
+# ---------- Logging / checkpointing ----------
+val_freq: 1000                            # (retained; unused after Stage 3 val block removal)
+save_model_freq: 1000
+print_freq: 100
+summary_freq: 100
+show_img_num: 2
+
+# ---------- RL / TD ----------
+parameter_lr_mul: 1
+value_lr_mul: 1
+critic_lr_mul: 1
+critic_logit_multiplier: 100
+discount_factor: 1.0
+filter_usage_penalty: 1.0
+use_TD: true
+maximum_trajectory_length: 7
+over_length_keep_prob: 0.5
+all_reward: 1.0
+exploration: 0.05
+exploration_penalty: 0.05
+early_stop_penalty: 1.0
+detect_loss_weight: 1.0
+use_penalty: true
+test_steps: 5
+
+# ---------- Controller network ----------
+base_channels: 32
+dropout_keep_prob: 0.5
+fc1_size: 128
+feature_extractor_dims: 4096
+
+# ---------- Replay memory ----------
+replay_memory_size: 128
+fresh_raw_ratio: 0.25
+
+# ---------- Latent noise (still consumed by replay for get_noise) ----------
+z_type: uniform
+z_dim_per_filter: 16

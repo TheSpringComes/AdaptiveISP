@@ -1,0 +1,21 @@
+# Expected numbers for regression checks.
+# Sources cited in README.md.
+
+paper:
+  dataset: LOD
+  metric: mAP@0.5
+  reported: 71.4     # Wang et al. (2024)
+  baseline_fixed_pipeline: 70.1
+
+ours:
+  dataset: LOD
+  metric: mAP@0.5
+  measurement: 71.6
+  ckpt: experiments/lod-adaptiveisp_v1_lod_seed0/ckpt/DynamicISP_iter_30000.pth
+  seed: 0
+  iter: 30000
+  wall_clock: "9h 46m on RTX 4090 (batch_size=8)"
+
+# Threshold: new runs must reach mAP@0.5 >= this.
+# Set to 3 sigma below our current measurement, giving room for seed variance.
+regression_threshold_mAP50: 68.0
