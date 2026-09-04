@@ -13,6 +13,7 @@ import datetime
 import logging
 import os
 import shutil
+from typing import Optional
 
 import cv2
 import numpy as np
@@ -140,6 +141,7 @@ class Trainer:
             runtime_penalty_lambda=cfg.filter_runtime_penalty_lambda,
             runtime_costs=cfg.filters_runtime,
             use_penalty=cfg.use_penalty,
+            stop_bonus_scale=float(cfg.get('stop_bonus_scale', 0.0)),
         )
 
         print("Controller: ", self.controller)
@@ -172,6 +174,66 @@ class Trainer:
         self._lr_decay = float(train_cfg.get('lr_decay', 0.1))
         self._lr_segments = int(train_cfg.get('lr_segments', 3))
 
+        # Fixed canary sample: drawn once at init, reused every print. Keeping
+        # the input constant across iters lets `example / canary` show how the
+        # Controller's decisions evolve on the SAME image over training — the
+        # cleanest RL-visualization signal.
+        self._canary_img = self._grab_dataset_image()
+
+    def _grab_dataset_image(self) -> Optional[torch.Tensor]:
+        """Pull one raw sample from the dataset, return `(1, 3, H, W)` on device.
+
+        `dataset.get_next_batch` returns either torch tensors (Normalize path)
+        or numpy arrays (RAW path) depending on the loader class — normalize
+        both here.
+        """
+        try:
+            im_list, _, _, _ = self.train_loader.dataset.get_next_batch(1)
+        except Exception as exc:
+            print(f"dataset image capture failed: {exc!r}")
+            return None
+        im = im_list[0]
+        if isinstance(im, np.ndarray):
+            im = torch.from_numpy(im)
+        return im.unsqueeze(0).to(self.device).float()
+
+    # ------------------------- shadow rollout helper -------------------------
+
+    def _shadow_rollout(self, single_img: torch.Tensor) -> tuple[list[str], int]:
+        """Run one T-step eval-argmax rollout on a `(1,3,H,W)` image.
+        Returns (pretty seq incl. optional final "STOP", op count excluding STOP).
+        """
+        def _fmt_step(op_name: str, phys: np.ndarray) -> str:
+            first = float(phys[0]) if phys.size else 0.0
+            if op_name.startswith("n_"):
+                return f"{op_name}(α={first:.2f})"
+            if phys.size > 1:
+                return f"{op_name}({first:.2f},+{phys.size - 1})"
+            return f"{op_name}({first:.2f})"
+
+        T_max = int(self.cfg.test_steps)
+        self.controller.eval()
+        with torch.no_grad():
+            state = self.runtime.initial_state(single_img.clone())
+            seq: list[str] = []
+            for _t in range(T_max):
+                c = self.search_space.valid_actions(state)
+                o = self.controller.act(state, c)
+                if o.action.is_stop[0].item() and not state.stopped[0].item():
+                    seq.append("STOP")
+                    break
+                idx = int(o.action.op_indices[0].item())
+                name = self.cfg.operators[idx]
+                dim = self.runtime.operators[name].spec.dim
+                phys = o.action.params[0, :dim].detach().cpu().numpy()
+                seq.append(_fmt_step(name, phys))
+                state = self.runtime.step(state, o.action)
+                if state.stopped[0].item():
+                    break
+        self.controller.train()
+        path_len = sum(1 for s in seq if s != "STOP")
+        return seq, path_len
+
     def train(self) -> None:
         if self.args.resume is not None:
             print(f"Resume from {self.args.resume}")
@@ -201,6 +263,29 @@ class Trainer:
 
         n_ops = len(self.cfg.operators)
 
+        # V2-AI: per-op cumulative selection counts, plus a windowed counter
+        # reset each `print_freq` block. Prints show classical vs neural share
+        # so we can watch whether the Controller actually learns to pick the
+        # n_* ops.
+        op_pick_cum = np.zeros(n_ops, dtype=np.int64)
+        op_pick_window = np.zeros(n_ops, dtype=np.int64)
+        neural_mask = np.array([n.startswith("n_") for n in self.cfg.operators], dtype=bool)
+
+        # V2-AI: elapsed + ETA tracking. `t_start` covers the whole run;
+        # `t_prev_print` gives the rolling iter/s for the last print window,
+        # which is a better ETA estimate than the run-average once warmup ends.
+        import time as _time
+        t_start = _time.perf_counter()
+        t_prev_print = t_start
+        iter_prev_print = 0
+        max_steps_display = int(self.cfg.test_steps)
+
+        def _fmt_elapsed(seconds: float) -> str:
+            seconds = max(0.0, float(seconds))
+            m, s = divmod(int(seconds + 0.5), 60)
+            h, m = divmod(m, 60)
+            return f"{h:d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
         for iter in range(self.cfg.max_iter_step + 1):
             self.controller.train()
             self.task_model.train()
@@ -227,6 +312,12 @@ class Trainer:
                 state_before, ctrl_out.action, state_after,
                 entropy=ctrl_out.entropy, progress=progress,
             )
+
+            # Per-op selection bookkeeping.
+            op_idx_np = ctrl_out.action.op_indices.detach().cpu().numpy()
+            counts = np.bincount(op_idx_np, minlength=n_ops)
+            op_pick_cum += counts
+            op_pick_window += counts
 
             # 1-step TD
             old_value = ctrl_out.value
@@ -270,9 +361,21 @@ class Trainer:
                     self.writer.add_scalar('penalty_task_delta', breakdown.task_delta.mean(), global_step=iter)
                     self.writer.add_scalar('penalty_entropy', breakdown.entropy_penalty.mean(), global_step=iter)
                     self.writer.add_scalar('penalty_usage', breakdown.usage_penalty.mean(), global_step=iter)
+                    if breakdown.stop_bonus is not None:
+                        self.writer.add_scalar('stop_bonus', breakdown.stop_bonus.mean(), global_step=iter)
                     self.writer.add_images('input',
                         torch.clip(state_before.image[:self.cfg.show_img_num], 0.0, 1.0),
                         global_step=iter, dataformats="NCHW")
+
+                    # V2-AI: per-op cumulative pick shares + neural/classical split.
+                    total_picks = float(op_pick_cum.sum()) or 1.0
+                    for i, name in enumerate(self.cfg.operators):
+                        self.writer.add_scalar(f'op_pick_share/{name}',
+                                               op_pick_cum[i] / total_picks, global_step=iter)
+                    self.writer.add_scalar('op_pick_share/_neural_total',
+                                           op_pick_cum[neural_mask].sum() / total_picks, global_step=iter)
+                    self.writer.add_scalar('op_pick_share/_classical_total',
+                                           op_pick_cum[~neural_mask].sum() / total_picks, global_step=iter)
                 except Exception:
                     print("write log error!")
                 op_idx_cpu = ctrl_out.action.op_indices.detach().cpu().tolist()
@@ -303,21 +406,79 @@ class Trainer:
             mloss_detect = (mloss_detect * iter + new_detect) / (iter + 1)
 
             if iter % self.cfg.print_freq == 0:
-                mem = f'{torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0:.3g}G'
-                n_targets = targets.shape[0]
-                penalty_total = -(breakdown.total.mean().item() - breakdown.task_delta.mean().item())
-                print(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                      ('%11s' + '%8s,') % (f'{iter}/{self.cfg.max_iter_step - 1}', mem),
-                      f"agent loss: {mloss_agent:.4f},",
-                      f"value loss: {mloss_value:.4f},",
-                      f"box_loss: {mloss_detect[0]:.4f}, obj_loss: {mloss_detect[1]:.4f}, cls_loss: {mloss_detect[2]:.4f},",
-                      f"detect_retouch_loss: {detect_retouch_loss.mean().item():.2f},",
-                      f"instances: {n_targets:2d},",
-                      f"lr: {scheduler.get_last_lr()[0]:.4e},",
-                      f"penalty: {penalty_total:.4e}",
-                      f"reward: {r.mean().item():.4e}",
+                t_now = _time.perf_counter()
+                elapsed = t_now - t_start
+                dt_win = max(t_now - t_prev_print, 1e-6)
+                di_win = max(iter - iter_prev_print, 1)
+                it_per_s = di_win / dt_win if iter > 0 else 0.0
+                remaining = self.cfg.max_iter_step - iter
+                eta = remaining / it_per_s if it_per_s > 0 else 0.0
+                header_time = datetime.datetime.now().strftime("%H:%M:%S")
+                header = (
+                    f"----- iter {iter}/{self.cfg.max_iter_step} [{header_time}] "
+                    f"elapsed {_fmt_elapsed(elapsed)} | "
+                    f"{it_per_s:.2f} it/s | ETA {_fmt_elapsed(eta)} -----"
                 )
-                self.train_loader.debug()
+                print(header)
+                print(
+                    f"  loss     agent={mloss_agent:.4f} val={mloss_value:.4f} "
+                    f"detect={detect_retouch_loss.mean().item():.4f} "
+                    f"reward={r.mean().item():+.4f}"
+                )
+
+                # traj — batch and replay-pool trajectory-length statistics.
+                # ReplayMemory stores state as a flat [has_reward, stopped, step, op_usage...]
+                # np array; step is at index 2.
+                T_max = int(self.cfg.test_steps)
+
+                # example — three eval-argmax shadow rollouts to reveal what
+                # the current Controller would do end-to-end on:
+                #   canary : a fixed image drawn once at init  → shows policy
+                #            evolution on the same input over training
+                #   batch  : a random sample of the current iter's batch
+                #   fresh  : a newly-drawn sample from the dataset each print
+                # Together these separate "the policy changed" from "the image
+                # was different" when a single rollout looks unfamiliar.
+                b_idx = int(torch.randint(0, imgs.shape[0], (1,)).item())
+                batch_img = imgs[b_idx:b_idx + 1]
+                fresh_img = self._grab_dataset_image()
+
+                rollouts: list[tuple[str, list[str], int]] = []
+                if self._canary_img is not None:
+                    seq, ln = self._shadow_rollout(self._canary_img)
+                    rollouts.append(("canary", seq, ln))
+                seq, ln = self._shadow_rollout(batch_img)
+                rollouts.append((f"batch", seq, ln))
+                if fresh_img is not None:
+                    seq, ln = self._shadow_rollout(fresh_img)
+                    rollouts.append(("fresh", seq, ln))
+
+                print("  example  eval-argmax rollouts on {}:".format(
+                    " / ".join(name for name, _, _ in rollouts)
+                ))
+                for name, seq, ln in rollouts:
+                    print(f"           {name:9s} (len={ln}/{T_max}): "
+                          f"{' → '.join(seq) if seq else '(none)'}")
+
+                # ops window/cum
+                w_total = int(op_pick_window.sum())
+                if w_total:
+                    top_idx = np.argsort(-op_pick_window)[:6]
+                    top_str = " ".join(
+                        f"{self.cfg.operators[i]}:{op_pick_window[i]}"
+                        for i in top_idx if op_pick_window[i] > 0
+                    )
+                    c_total = int(op_pick_cum.sum())
+                    c_neural = int(op_pick_cum[neural_mask].sum())
+                    print(f"  ops      window({w_total}) top: {top_str}")
+                    print(
+                        f"           cum neural {c_neural}/{c_total} = "
+                        f"{100 * c_neural / max(c_total, 1):.1f}%"
+                    )
+                op_pick_window[:] = 0
+                t_prev_print = t_now
+                iter_prev_print = iter
+                # self.train_loader.debug()
 
             if torch.isnan(state_after.image).any() or torch.isinf(state_after.image).any():
                 print("retouch is nan or inf", torch.mean(state_after.image).detach().cpu().numpy())
