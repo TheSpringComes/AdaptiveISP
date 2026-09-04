@@ -35,6 +35,8 @@ class RewardBreakdown:
     early_stop_penalty: torch.Tensor
     runtime_penalty: torch.Tensor
     total: torch.Tensor
+    # Optional: stop-time bonus for Detection reward (learned STOP).
+    stop_bonus: Optional[torch.Tensor] = None
 
 
 class Reward(ABC):
@@ -63,6 +65,7 @@ class AdaptiveISPReward(Reward):
         runtime_costs: Optional[list[float]] = None,
         detect_loss_key: str = "detect_loss",
         use_penalty: bool = True,
+        stop_bonus_scale: float = 0.0,
     ) -> None:
         self.n_ops = int(n_ops)
         self.max_steps = int(max_steps)
@@ -76,6 +79,7 @@ class AdaptiveISPReward(Reward):
         self.runtime_costs = list(runtime_costs or [])
         self.detect_loss_key = detect_loss_key
         self.use_penalty = bool(use_penalty)
+        self.stop_bonus_scale = float(stop_bonus_scale)
 
         if self.runtime_penalty_enabled and len(self.runtime_costs) != self.n_ops:
             raise ValueError(
@@ -121,14 +125,26 @@ class AdaptiveISPReward(Reward):
                 * (math.log(self.n_ops) - entropy)
             )
 
-        # 4. Usage penalty (chosen op already used pre-step)
+        # 4. Usage penalty — exponential in the number of prior uses of the
+        # chosen op. Prevents policy from collapsing into a "keep picking the
+        # same op" loop. Formula:
+        #     first pick of op         : penalty = 0
+        #     k-th pick (k >= 2)       : penalty = base * 2^(k-1)
+        # where `k-1 = prev_count` is `state_before.op_usage[b, chosen]`.
+        # base_penalty=5.0 with default config → 5 for 2nd, 10 for 3rd,
+        # 20 for 4th, 40 for 5th, … so k = 5 accumulated repeats already
+        # cost 40× the per-step task_delta and is essentially blocked.
         safe_op = torch.where(
             action.is_stop, torch.zeros_like(action.op_indices), action.op_indices,
         )
         batch_idx = torch.arange(B, device=device)
-        chosen_pre_used = state_before.op_usage[batch_idx, safe_op].float().unsqueeze(-1)
-        chosen_pre_used = chosen_pre_used * (~action.is_stop).float().unsqueeze(-1)
-        usage_penalty = chosen_pre_used * self.filter_usage_penalty
+        prev_count = state_before.op_usage[batch_idx, safe_op].float().unsqueeze(-1)
+        is_repeat = (prev_count > 0).float()
+        scale = torch.pow(torch.tensor(2.0, device=device), prev_count)
+        usage_penalty = (
+            is_repeat * scale * self.filter_usage_penalty
+            * (~action.is_stop).float().unsqueeze(-1)
+        )
 
         # 5. Early-stop penalty (submitted before final step)
         is_last_step = (state_after.step == self.max_steps).float().unsqueeze(-1)
@@ -144,14 +160,32 @@ class AdaptiveISPReward(Reward):
         else:
             runtime_penalty = torch.zeros((B, 1), device=device)
 
+        # 7. Stop bonus — rewards the Controller for stopping when the current
+        # image already scores well. Encourages learned STOP action.
+        # Formula:
+        #     stop_bonus = submitted × max(0, 1 - detect_after) × stop_bonus_scale × critic_logit_multiplier
+        # detect_after ∈ [0, ~1]: closer to 0 (better) → bigger positive bonus.
+        # `max(0, ...)` clamps so pathologically-bad frames still get 0, not
+        # negative. Off-by-default (stop_bonus_scale=0) preserves legacy.
+        if self.stop_bonus_scale != 0.0:
+            quality = torch.clamp(1.0 - detect_after.detach(), min=0.0)
+            stop_bonus = (
+                submitted
+                * quality
+                * self.stop_bonus_scale
+                * self.critic_logit_multiplier
+            )
+        else:
+            stop_bonus = torch.zeros((B, 1), device=device)
+
         if self.use_penalty:
             penalty = (
                 overflow_penalty + entropy_penalty + usage_penalty
                 + early_stop_penalty + runtime_penalty
             )
-            reward = task_delta - penalty
+            reward = task_delta - penalty + stop_bonus
         else:
-            reward = task_delta
+            reward = task_delta + stop_bonus
 
         return reward, RewardBreakdown(
             task_delta=task_delta,
@@ -161,6 +195,7 @@ class AdaptiveISPReward(Reward):
             early_stop_penalty=early_stop_penalty,
             runtime_penalty=runtime_penalty,
             total=reward,
+            stop_bonus=stop_bonus,
         )
 
 

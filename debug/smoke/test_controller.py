@@ -45,13 +45,14 @@ def test_controller_act() -> None:
     # Shapes.
     assert out.action.op_indices.shape == (B,)
     assert out.action.params.shape[0] == B
-    assert out.logits.shape == (B, ctrl.n_ops)
+    # n_ops op-logits + 1 STOP logit
+    assert out.logits.shape == (B, ctrl.n_ops + 1)
     assert out.value.shape == (B, 1)
     assert out.log_prob.shape == (B, 1)
     assert out.entropy.shape == (B, 1)
-    # Entropy in [0, log(N_ops)].
+    # Entropy in [0, log(N_ops + 1)] since STOP is an extra action.
     import math
-    assert 0.0 <= out.entropy.min().item() <= math.log(ctrl.n_ops) + 1e-4
+    assert 0.0 <= out.entropy.min().item() <= math.log(ctrl.n_ops + 1) + 1e-4
 
     # Gradient flow: fake advantage, backward, confirm select_head + value_net grads populated.
     adv = torch.randn(B, device=device)

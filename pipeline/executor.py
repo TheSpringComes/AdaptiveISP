@@ -47,7 +47,7 @@ class PipelineExecutor:
             step=torch.zeros(b, dtype=torch.long, device=device),
             stopped=torch.zeros(b, dtype=torch.bool, device=device),
             has_reward=torch.zeros(b, dtype=torch.bool, device=device),
-            op_usage=torch.zeros((b, self.n_ops), dtype=torch.bool, device=device),
+            op_usage=torch.zeros((b, self.n_ops), dtype=torch.long, device=device),
             history=[],
         )
 
@@ -74,7 +74,7 @@ class PipelineExecutor:
             imgs = state.image[mask]
             params = action.params[mask, :dim]
             new_image[mask] = op.apply(imgs, params)
-            new_op_usage[mask, op_idx] = True
+            new_op_usage[mask, op_idx] += 1
 
         new_stopped = state.stopped | action.is_stop
         new_step = state.step + (~state.stopped).long()
@@ -107,7 +107,7 @@ def pipeline_state_from_replay(
         step=states_tensor[:, 2].long(),
         stopped=states_tensor[:, 1].bool(),
         has_reward=states_tensor[:, 0].bool(),
-        op_usage=states_tensor[:, 3:3 + n_ops].bool(),
+        op_usage=states_tensor[:, 3:3 + n_ops].long(),
     )
 
 

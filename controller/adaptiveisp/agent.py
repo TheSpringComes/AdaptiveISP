@@ -76,7 +76,8 @@ class AdaptiveISPController(Controller):
         self.select_head = nn.Sequential(
             nn.Linear(feature_dim, fc1_size),
             nn.LeakyReLU(negative_slope=0.2),
-            nn.Linear(fc1_size, self.n_ops),
+            # n_ops op logits + 1 STOP logit (learned; last column)
+            nn.Linear(fc1_size, self.n_ops + 1),
         )
         self.value_net = AdaptiveISPValueNet(
             n_ops=self.n_ops, obs_hw=obs_hw,
@@ -108,10 +109,20 @@ class AdaptiveISPController(Controller):
         pf = self.param_features(obs)
         sf = self.select_features(obs)
 
-        logits = self.select_head(sf)
+        # Action space: n_ops op choices + 1 STOP action (index = n_ops).
+        n_actions = self.n_ops + 1
+        logits = self.select_head(sf)                             # [B, n_ops + 1]
         pdf = F.softmax(logits, dim=1) + 1e-37
-        pdf = pdf * (1.0 - self.exploration) + self.exploration / self.n_ops
-        pdf = pdf * constraint.op_mask.float()   # V1 identity Prior: no-op
+        pdf = pdf * (1.0 - self.exploration) + self.exploration / n_actions
+
+        # Extend the op-mask with a STOP column. STOP is forbidden at step 0
+        # (policy must apply at least one op before it can stop) — otherwise
+        # the trivial all-STOP policy is a shallow local optimum.
+        stop_col_ok = (state.step > 0).float().unsqueeze(-1)      # (B, 1)
+        extended_mask = torch.cat(
+            [constraint.op_mask.float(), stop_col_ok], dim=1,
+        )                                                          # [B, n_ops + 1]
+        pdf = pdf * extended_mask
         pdf = pdf / (pdf.sum(dim=1, keepdim=True) + 1e-30)
         entropy = (-pdf * torch.log(pdf + 1e-10)).sum(dim=1, keepdim=True)
 
@@ -121,16 +132,23 @@ class AdaptiveISPController(Controller):
         if self.training:
             if noise is None:
                 noise = torch.rand(B, 1, device=device)
-            op_indices = pdf_sample(pdf, noise).to(torch.int64)
+            action_indices = pdf_sample(pdf, noise).to(torch.int64)
         else:
-            op_indices = pdf.argmax(dim=1).to(torch.int64)
+            action_indices = pdf.argmax(dim=1).to(torch.int64)
 
-        log_prob = torch.log(pdf.gather(1, op_indices.unsqueeze(-1)) + 1e-10)
+        log_prob = torch.log(pdf.gather(1, action_indices.unsqueeze(-1)) + 1e-10)
+
+        # Split STOP (action == n_ops) from op picks. STOP samples get a dummy
+        # op_index=0; PipelineExecutor filters them out via `~is_stop`.
+        stop_action = action_indices == self.n_ops
+        op_indices = torch.where(
+            stop_action, torch.zeros_like(action_indices), action_indices,
+        )
 
         max_dim = max(self.operators[n].spec.dim for n in self.canonical_order)
         params_flat = torch.zeros(B, max_dim, device=device)
         for idx, name in enumerate(self.canonical_order):
-            mask = op_indices == idx
+            mask = (op_indices == idx) & (~stop_action)
             if not mask.any():
                 continue
             op = self.operators[name]
@@ -140,8 +158,9 @@ class AdaptiveISPController(Controller):
                 physical = physical.reshape(physical.shape[0], -1)
             params_flat[mask, :op.spec.dim] = physical
 
-        is_stop = state.step >= (self.max_steps - 1)
-        is_stop = is_stop | state.stopped
+        # Final is_stop: learned STOP OR time-limit reached OR already stopped.
+        is_stop_time = state.step >= (self.max_steps - 1)
+        is_stop = stop_action | is_stop_time | state.stopped
 
         value = self.value_net(state)
 
