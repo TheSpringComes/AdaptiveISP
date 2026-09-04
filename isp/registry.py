@@ -39,6 +39,8 @@ def build_operator(name: str, **kwargs) -> ISPOperator:
 CANONICAL_ORDER: list[str] = [
     "exposure", "gamma", "ccm", "sharpen", "denoise",
     "tone", "contrast", "saturation", "wnb", "whitebalance",
+    # Neural (Samsung Modular Neural ISP) — appended so classical indices are stable.
+    "n_denoise", "n_awb", "n_gain", "n_gtm", "n_chroma", "n_gamma", "n_detail",
 ]
 
 

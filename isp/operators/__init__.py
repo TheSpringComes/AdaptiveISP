@@ -34,6 +34,9 @@ from isp.operators import saturation     # noqa: F401
 from isp.operators import wnb            # noqa: F401
 from isp.operators import whitebalance   # noqa: F401
 
+# Neural (learned) operators — Samsung Modular Neural ISP wrappers.
+from isp import learned as _learned      # noqa: F401
+
 
 __all__ = [
     "ISPOperator", "OPERATORS", "ParameterSpec", "build_operator", "register",
