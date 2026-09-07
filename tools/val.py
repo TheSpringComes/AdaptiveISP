@@ -24,34 +24,42 @@ if _ROOT not in sys.path:
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--weights', type=str, default='pretrained/yolov3.pt')
-    parser.add_argument('--isp_weights', type=str, required=True,
+    p = argparse.ArgumentParser()
+    p.add_argument('--weights', type=str, default='pretrained/yolov3.pt')
+    p.add_argument('--isp_weights', type=str, required=True,
                    help="V1 Controller checkpoint (schema: {'controller_model', ...})")
-    parser.add_argument('--data', type=str, required=True,
+    p.add_argument('--data', type=str, required=True,
                    help='dataset yaml (e.g. tasks/third_party/yolov3/data/lod.yaml)')
-    parser.add_argument('--data_name', type=str, default='lod', choices=['lod', 'coco'])
-    parser.add_argument('--imgsz', type=int, default=512)
-    parser.add_argument('--batch-size', dest='batch_size', type=int, default=1)
-    parser.add_argument('--steps', type=int, default=5, help='ISP rollout steps')
-    parser.add_argument('--cfg', dest='cfg_path', type=str, default='configs/adaptiveisp.yaml',
+    p.add_argument('--data_name', type=str, default='lod', choices=['lod', 'coco'])
+    p.add_argument('--imgsz', type=int, default=512)
+    p.add_argument('--batch-size', dest='batch_size', type=int, default=1)
+    p.add_argument('--steps', type=int, default=5, help='ISP rollout steps')
+    p.add_argument('--cfg', dest='cfg_path', type=str, default='configs/adaptiveisp.yaml',
                    help='framework config yaml (controller net dims etc.)')
-    parser.add_argument('--cfg_file', dest='cfg_path', type=str,
+    p.add_argument('--cfg_file', dest='cfg_path', type=str,
                    help='alias for --cfg')
-    parser.add_argument('--project', type=str, default='val_results')
-    parser.add_argument('--name', type=str, default='exp')
-    parser.add_argument('--exist-ok', dest='exist_ok', action='store_true')
-    parser.add_argument('--conf-thres', dest='conf_thres', type=float, default=0.001)
-    parser.add_argument('--iou-thres', dest='iou_thres', type=float, default=0.6)
-    parser.add_argument('--max-det', dest='max_det', type=int, default=300)
-    parser.add_argument('--seed', type=int, default=0)
-    return parser.parse_args()
+    p.add_argument('--project', type=str, default='val_results')
+    p.add_argument('--name', type=str, default='exp')
+    p.add_argument('--exist-ok', dest='exist_ok', action='store_true')
+    p.add_argument('--conf-thres', dest='conf_thres', type=float, default=0.001)
+    p.add_argument('--iou-thres', dest='iou_thres', type=float, default=0.6)
+    p.add_argument('--max-det', dest='max_det', type=int, default=300)
+    p.add_argument('--seed', type=int, default=0)
+
+    # V2-AI: automatic canary visualization after mAP. Off with --skip_viz.
+    p.add_argument('--skip_viz', action='store_true', default=False,
+                   help='skip the canary visualization step (default: run it)')
+    p.add_argument('--viz_cases', type=int, default=4,
+                   help='number of canary cases to visualize')
+    return p.parse_args()
 
 
 def main() -> None:
     args = _parse_args()
     from engine.evaluator import evaluate
-    evaluate(**vars(args))
+    kwargs = vars(args)
+    kwargs['run_viz'] = not kwargs.pop('skip_viz')
+    evaluate(**kwargs)
 
 
 if __name__ == '__main__':

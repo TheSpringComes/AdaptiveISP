@@ -17,7 +17,7 @@
 # channel layout, PipelineState op_usage columns, and PipelineExecutor
 # dispatch all key off this list. Classical ops come first so their
 # integer indices stay stable across V1 checkpoints; the 7 neural
-# operators are appended for V2-AI; 9 Infinite-ISP-derived ops append after.
+# operators are appended for V2-AI.
 operators:
   - exposure
   - gamma
@@ -36,22 +36,11 @@ operators:
   - n_gamma
   # - n_denoise
   # - n_detail
-  # ----- Infinite-ISP-derived (Torch-native) -----
-  - inf_awb_grayworld
-  - inf_awb_norm2
-  - inf_awb_pca
-  - inf_digital_gain
-  - inf_ldci
-  - inf_unsharp
-  - inf_nlm
-  - inf_ebf
-  - inf_saturation
 
 # Runtime cost per op (aligned with `operators` above). Consumed by
 # AdaptiveISPReward when runtime_penalty_enabled=true.
 filters_runtime: [1.7, 2.0, 1.9, 6.3, 10.0, 2.7, 2.1, 2.0, 1.9, 1.7,
-                  8.0, 3.0, 4.0, 0.4, 0.3,
-                  1.5, 1.5, 3.0, 1.0, 3.5, 5.0, 12.0, 8.0, 1.7]
+                  8.0, 3.0, 4.0, 0.4, 0.3]
 filter_runtime_penalty: false            # overridden by --runtime_penalty
 filter_runtime_penalty_lambda: 0.01
 
@@ -78,7 +67,7 @@ exploration_penalty: 0.05
 early_stop_penalty: 1.0
 detect_loss_weight: 1.0
 use_penalty: true
-test_steps: 8                              # ISP rollout steps at train + val
+test_steps: 5                              # ISP rollout steps at train + val
 grad_clip_norm: 1.0e-05                    # gradient clipping norm on Controller
 
 # ---------- Stop bonus (V2-AI, learned STOP action) ----------

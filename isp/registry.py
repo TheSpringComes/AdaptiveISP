@@ -39,6 +39,12 @@ def build_operator(name: str, **kwargs) -> ISPOperator:
 CANONICAL_ORDER: list[str] = [
     "exposure", "gamma", "ccm", "sharpen", "denoise",
     "tone", "contrast", "saturation", "wnb", "whitebalance",
+    # Neural (Samsung Modular Neural ISP) — appended so classical indices are stable.
+    "n_denoise", "n_awb", "n_gain", "n_gtm", "n_chroma", "n_gamma", "n_detail",
+    # Infinite-ISP-derived classical operators (Torch-native reimplementations).
+    "inf_awb_grayworld", "inf_awb_norm2", "inf_awb_pca",
+    "inf_digital_gain", "inf_ldci", "inf_unsharp",
+    "inf_nlm", "inf_ebf", "inf_saturation",
 ]
 
 

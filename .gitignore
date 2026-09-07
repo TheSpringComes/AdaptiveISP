@@ -42,3 +42,7 @@ results
 
 # Refactor V1: per-run artifacts (large / machine-specific / regenerable)
 val_results/
+logs_ablation/
+
+# V2-AI: vendored Samsung Modular Neural ISP (cloned separately, contains model weights)
+isp/third_party/modular_neural_isp/
