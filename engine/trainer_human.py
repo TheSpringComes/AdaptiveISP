@@ -197,6 +197,19 @@ class HumanTrainer:
         op_pick_window = np.zeros(n_ops, dtype=np.int64)
         neural_mask = np.array([n.startswith("n_") for n in self.cfg.operators], dtype=bool)
 
+        # V2-AI (A+C): windowed accumulators for reward-breakdown + policy
+        # diagnostics. For Human, reward components are per-step (aggregated
+        # across the T-step rollout inside each iter), then summed across
+        # iters in the window. `n_steps` is total per-step samples in-window.
+        win = {
+            'n_iters': 0, 'n_steps': 0,
+            'task': 0.0, 'ent_pen': 0.0, 'use': 0.0, 'estop': 0.0,
+            'ovfl': 0.0, 'stop_b': 0.0, 'runt': 0.0,
+            'pol_ent': 0.0, 'argmax_hits': 0, 'argmax_seen': 0,
+            'n_stop': 0, 'n_stop_learned': 0, 'n_stop_timelimit': 0,
+        }
+        log_n_ops_plus1 = float(np.log(n_ops + 1))
+
         t_start = time.perf_counter()
         t_prev_print = t_start
         iter_prev_print = 0
@@ -221,6 +234,7 @@ class HumanTrainer:
         for it in range(max_iter_step + 1):
             self.controller.train()
             progress = float(it) / max(max_iter_step, 1)
+            win['n_iters'] += 1
 
             imgs, targets = self._next_batch()
             imgs = imgs.to(self.device, non_blocking=True).float()
@@ -267,6 +281,34 @@ class HumanTrainer:
                 reward_totals.append(r.mean().detach())
                 if q_parts:
                     q_final_parts = q_parts
+
+                # V2-AI (A+C): accumulate reward-breakdown + policy stats.
+                win['n_steps'] += 1
+                win['task'] += float(breakdown.task_delta.mean().item())
+                win['ent_pen'] += float(breakdown.entropy_penalty.mean().item())
+                win['use'] += float(breakdown.usage_penalty.mean().item())
+                win['estop'] += float(breakdown.early_stop_penalty.mean().item())
+                win['ovfl'] += float(breakdown.overflow_penalty.mean().item())
+                win['runt'] += float(breakdown.runtime_penalty.mean().item())
+                if breakdown.stop_bonus is not None:
+                    win['stop_b'] += float(breakdown.stop_bonus.mean().item())
+                win['pol_ent'] += float(ctrl_out.entropy.mean().item())
+                with torch.no_grad():
+                    argmax_idx = ctrl_out.logits.argmax(dim=-1)
+                    sampled_idx = torch.where(
+                        ctrl_out.action.is_stop,
+                        torch.full_like(ctrl_out.action.op_indices, n_ops),
+                        ctrl_out.action.op_indices,
+                    )
+                    win['argmax_hits'] += int((argmax_idx == sampled_idx).sum().item())
+                    win['argmax_seen'] += int(sampled_idx.numel())
+                is_stop_batch = ctrl_out.action.is_stop.detach().cpu().numpy()
+                n_stop = int(is_stop_batch.sum())
+                is_last = int((new_state.step == T).sum().item())
+                n_stop_tl = min(n_stop, is_last)
+                win['n_stop'] += n_stop
+                win['n_stop_timelimit'] += n_stop_tl
+                win['n_stop_learned'] += (n_stop - n_stop_tl)
 
                 # 1-step TD
                 old_value = ctrl_out.value
@@ -370,6 +412,36 @@ class HumanTrainer:
                     f"LPIPS={q_final_parts['lpips'].mean().item():.4f}"
                 )
 
+                # V2-AI (A): windowed reward-breakdown means (per rollout step).
+                wn = max(1, win['n_steps'])
+                stop_bonus_on = float(self.cfg.get('stop_bonus_scale', 0.0)) != 0.0
+                bits_A = [
+                    f"task={win['task'] / wn:+.3f}",
+                    f"ent=-{abs(win['ent_pen'] / wn):.3f}",
+                    f"use=-{abs(win['use'] / wn):.3f}",
+                    f"estop=-{abs(win['estop'] / wn):.3f}",
+                    f"ovfl=-{abs(win['ovfl'] / wn):.3f}",
+                ]
+                if stop_bonus_on:
+                    bits_A.append(f"stop+={win['stop_b'] / wn:+.3f}")
+                if self.cfg.filter_runtime_penalty:
+                    bits_A.append(f"runt=-{abs(win['runt'] / wn):.3f}")
+                print(f"  reward   {' '.join(bits_A)}")
+
+                # V2-AI (C): policy/exploration diagnostics.
+                pol_ent = win['pol_ent'] / wn
+                argmax_pct = (100.0 * win['argmax_hits'] / max(1, win['argmax_seen']))
+                stop_pct = (100.0 * win['n_stop'] / max(1, win['argmax_seen']))
+                learned_pct = (100.0 * win['n_stop_learned'] / max(1, win['n_stop'])
+                               if win['n_stop'] else 0.0)
+                timelimit_pct = 100.0 - learned_pct if win['n_stop'] else 0.0
+                print(
+                    f"  policy   entropy={pol_ent:.3f}/{log_n_ops_plus1:.3f}  "
+                    f"argmax={argmax_pct:.0f}%  "
+                    f"stop={stop_pct:.0f}% (learned={learned_pct:.0f}%, "
+                    f"timelimit={timelimit_pct:.0f}%)"
+                )
+
                 # example — sample 0's full op sequence with per-step α / first param
                 seq_pretty = [_fmt_step(name, phys) for (name, phys) in traj_step_info]
                 q0_s0 = q_initial[0, 0].item()
@@ -394,6 +466,9 @@ class HumanTrainer:
                     print(f"           cum neural {c_neural}/{c_total} = "
                           f"{100 * c_neural / max(c_total, 1):.1f}%")
                 op_pick_window[:] = 0
+                # V2-AI: reset windowed A+C accumulators.
+                for k in win:
+                    win[k] = 0 if isinstance(win[k], int) else 0.0
                 t_prev_print = t_now
                 iter_prev_print = it
 

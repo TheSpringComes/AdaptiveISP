@@ -263,6 +263,20 @@ class Trainer:
 
         n_ops = len(self.cfg.operators)
 
+        # V2-AI: windowed accumulators for the expanded print block. Reset
+        # every `print_freq` iters so the numbers reflect the current
+        # window, not the drift-heavy from-start EMA. Order:
+        #   A — reward breakdown (task/ent/use/estop/ovfl/stop_bonus/runtime)
+        #   C — policy/exploration (entropy, argmax-match, STOP split)
+        win = {
+            'n': 0,               # iters in window
+            'task': 0.0, 'ent_pen': 0.0, 'use': 0.0, 'estop': 0.0,
+            'ovfl': 0.0, 'stop_b': 0.0, 'runt': 0.0,
+            'pol_ent': 0.0, 'argmax_hits': 0, 'argmax_seen': 0,
+            'n_stop': 0, 'n_stop_learned': 0, 'n_stop_timelimit': 0,
+        }
+        log_n_ops_plus1 = float(np.log(n_ops + 1))   # entropy max for select_head
+
         # V2-AI: per-op cumulative selection counts, plus a windowed counter
         # reset each `print_freq` block. Prints show classical vs neural share
         # so we can watch whether the Controller actually learns to pick the
@@ -318,6 +332,42 @@ class Trainer:
             counts = np.bincount(op_idx_np, minlength=n_ops)
             op_pick_cum += counts
             op_pick_window += counts
+
+            # V2-AI (A+C): windowed reward-breakdown + policy diagnostics.
+            win['n'] += 1
+            win['task'] += float(breakdown.task_delta.mean().item())
+            win['ent_pen'] += float(breakdown.entropy_penalty.mean().item())
+            win['use'] += float(breakdown.usage_penalty.mean().item())
+            win['estop'] += float(breakdown.early_stop_penalty.mean().item())
+            win['ovfl'] += float(breakdown.overflow_penalty.mean().item())
+            win['runt'] += float(breakdown.runtime_penalty.mean().item())
+            if breakdown.stop_bonus is not None:
+                win['stop_b'] += float(breakdown.stop_bonus.mean().item())
+            win['pol_ent'] += float(ctrl_out.entropy.mean().item())
+            # argmax-match: how often the sampled action equals the greedy
+            # choice from logits. Low = exploring; high = policy locked in.
+            with torch.no_grad():
+                argmax_idx = ctrl_out.logits.argmax(dim=-1)
+                # `logits` covers n_ops op-logits + 1 STOP logit; op_indices
+                # is n_ops for STOP so this compare is well-defined.
+                sampled_idx = torch.where(
+                    ctrl_out.action.is_stop,
+                    torch.full_like(ctrl_out.action.op_indices, n_ops),
+                    ctrl_out.action.op_indices,
+                )
+                hits = (argmax_idx == sampled_idx).sum().item()
+                seen = int(sampled_idx.numel())
+            win['argmax_hits'] += int(hits)
+            win['argmax_seen'] += seen
+            # STOP breakdown: total-STOP vs learned-STOP (Controller chose
+            # STOP before time limit) vs time-limit-STOP (max_steps hit).
+            is_stop_np = ctrl_out.action.is_stop.detach().cpu().numpy()
+            n_stop = int(is_stop_np.sum())
+            is_last_step = int((state_after.step == self.cfg.test_steps).sum().item())
+            n_stop_timelimit = min(n_stop, is_last_step)
+            win['n_stop'] += n_stop
+            win['n_stop_timelimit'] += n_stop_timelimit
+            win['n_stop_learned'] += (n_stop - n_stop_timelimit)
 
             # 1-step TD
             old_value = ctrl_out.value
@@ -426,6 +476,36 @@ class Trainer:
                     f"reward={r.mean().item():+.4f}"
                 )
 
+                # V2-AI (A): windowed reward-breakdown means.
+                wn = max(1, win['n'])
+                stop_bonus_on = float(self.cfg.get('stop_bonus_scale', 0.0)) != 0.0
+                bits_A = [
+                    f"task={win['task'] / wn:+.3f}",
+                    f"ent=-{abs(win['ent_pen'] / wn):.3f}",
+                    f"use=-{abs(win['use'] / wn):.3f}",
+                    f"estop=-{abs(win['estop'] / wn):.3f}",
+                    f"ovfl=-{abs(win['ovfl'] / wn):.3f}",
+                ]
+                if stop_bonus_on:
+                    bits_A.append(f"stop+={win['stop_b'] / wn:+.3f}")
+                if self.cfg.filter_runtime_penalty:
+                    bits_A.append(f"runt=-{abs(win['runt'] / wn):.3f}")
+                print(f"  reward   {' '.join(bits_A)}")
+
+                # V2-AI (C): policy/exploration diagnostics.
+                pol_ent = win['pol_ent'] / wn
+                argmax_pct = (100.0 * win['argmax_hits'] / max(1, win['argmax_seen']))
+                stop_pct = (100.0 * win['n_stop'] / max(1, win['argmax_seen']))
+                learned_pct = (100.0 * win['n_stop_learned'] / max(1, win['n_stop'])
+                               if win['n_stop'] else 0.0)
+                timelimit_pct = 100.0 - learned_pct if win['n_stop'] else 0.0
+                print(
+                    f"  policy   entropy={pol_ent:.3f}/{log_n_ops_plus1:.3f}  "
+                    f"argmax={argmax_pct:.0f}%  "
+                    f"stop={stop_pct:.0f}% (learned={learned_pct:.0f}%, "
+                    f"timelimit={timelimit_pct:.0f}%)"
+                )
+
                 # traj — batch and replay-pool trajectory-length statistics.
                 # ReplayMemory stores state as a flat [has_reward, stopped, step, op_usage...]
                 # np array; step is at index 2.
@@ -476,6 +556,9 @@ class Trainer:
                         f"{100 * c_neural / max(c_total, 1):.1f}%"
                     )
                 op_pick_window[:] = 0
+                # V2-AI: reset windowed A+C accumulators.
+                for k in win:
+                    win[k] = 0 if isinstance(win[k], int) else 0.0
                 t_prev_print = t_now
                 iter_prev_print = iter
                 # self.train_loader.debug()
