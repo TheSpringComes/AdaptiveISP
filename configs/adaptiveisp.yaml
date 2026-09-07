@@ -78,7 +78,7 @@ exploration_penalty: 0.05
 early_stop_penalty: 1.0
 detect_loss_weight: 1.0
 use_penalty: true
-test_steps: 10                              # ISP rollout steps at train + val
+test_steps: 8                              # ISP rollout steps at train + val
 grad_clip_norm: 1.0e-05                    # gradient clipping norm on Controller
 
 # ---------- Stop bonus (V2-AI, learned STOP action) ----------

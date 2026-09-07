@@ -476,35 +476,35 @@ class Trainer:
                     f"reward={r.mean().item():+.4f}"
                 )
 
-                # V2-AI (A): windowed reward-breakdown means.
-                wn = max(1, win['n'])
-                stop_bonus_on = float(self.cfg.get('stop_bonus_scale', 0.0)) != 0.0
-                bits_A = [
-                    f"task={win['task'] / wn:+.3f}",
-                    f"ent=-{abs(win['ent_pen'] / wn):.3f}",
-                    f"use=-{abs(win['use'] / wn):.3f}",
-                    f"estop=-{abs(win['estop'] / wn):.3f}",
-                    f"ovfl=-{abs(win['ovfl'] / wn):.3f}",
-                ]
-                if stop_bonus_on:
-                    bits_A.append(f"stop+={win['stop_b'] / wn:+.3f}")
-                if self.cfg.filter_runtime_penalty:
-                    bits_A.append(f"runt=-{abs(win['runt'] / wn):.3f}")
-                print(f"  reward   {' '.join(bits_A)}")
+                # # V2-AI (A): windowed reward-breakdown means.
+                # wn = max(1, win['n'])
+                # stop_bonus_on = float(self.cfg.get('stop_bonus_scale', 0.0)) != 0.0
+                # bits_A = [
+                #     f"task={win['task'] / wn:+.3f}",
+                #     f"ent=-{abs(win['ent_pen'] / wn):.3f}",
+                #     f"use=-{abs(win['use'] / wn):.3f}",
+                #     f"estop=-{abs(win['estop'] / wn):.3f}",
+                #     f"ovfl=-{abs(win['ovfl'] / wn):.3f}",
+                # ]
+                # if stop_bonus_on:
+                #     bits_A.append(f"stop+={win['stop_b'] / wn:+.3f}")
+                # if self.cfg.filter_runtime_penalty:
+                #     bits_A.append(f"runt=-{abs(win['runt'] / wn):.3f}")
+                # print(f"  reward   {' '.join(bits_A)}")
 
-                # V2-AI (C): policy/exploration diagnostics.
-                pol_ent = win['pol_ent'] / wn
-                argmax_pct = (100.0 * win['argmax_hits'] / max(1, win['argmax_seen']))
-                stop_pct = (100.0 * win['n_stop'] / max(1, win['argmax_seen']))
-                learned_pct = (100.0 * win['n_stop_learned'] / max(1, win['n_stop'])
-                               if win['n_stop'] else 0.0)
-                timelimit_pct = 100.0 - learned_pct if win['n_stop'] else 0.0
-                print(
-                    f"  policy   entropy={pol_ent:.3f}/{log_n_ops_plus1:.3f}  "
-                    f"argmax={argmax_pct:.0f}%  "
-                    f"stop={stop_pct:.0f}% (learned={learned_pct:.0f}%, "
-                    f"timelimit={timelimit_pct:.0f}%)"
-                )
+                # # V2-AI (C): policy/exploration diagnostics.
+                # pol_ent = win['pol_ent'] / wn
+                # argmax_pct = (100.0 * win['argmax_hits'] / max(1, win['argmax_seen']))
+                # stop_pct = (100.0 * win['n_stop'] / max(1, win['argmax_seen']))
+                # learned_pct = (100.0 * win['n_stop_learned'] / max(1, win['n_stop'])
+                #                if win['n_stop'] else 0.0)
+                # timelimit_pct = 100.0 - learned_pct if win['n_stop'] else 0.0
+                # print(
+                #     f"  policy   entropy={pol_ent:.3f}/{log_n_ops_plus1:.3f}  "
+                #     f"argmax={argmax_pct:.0f}%  "
+                #     f"stop={stop_pct:.0f}% (learned={learned_pct:.0f}%, "
+                #     f"timelimit={timelimit_pct:.0f}%)"
+                # )
 
                 # traj — batch and replay-pool trajectory-length statistics.
                 # ReplayMemory stores state as a flat [has_reward, stopped, step, op_usage...]
