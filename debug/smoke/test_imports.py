@@ -20,6 +20,7 @@ def test_imports() -> None:
     from isp.registry import OPERATORS, register, build_operator, CANONICAL_ORDER
     from isp.operators import exposure, gamma, ccm, sharpen, denoise, tone, contrast, saturation, wnb, whitebalance   # noqa: F401
     from isp.learned.samsung_modular import denoise as n_denoise, awb as n_awb, gain as n_gain, gtm as n_gtm, chroma as n_chroma, gamma as n_gamma, detail as n_detail   # noqa: F401
+    from isp.operators.infinite_isp import awb as inf_awb, gain as inf_gain, contrast as inf_contrast, sharpen as inf_sharpen, denoise as inf_denoise, saturation as inf_saturation   # noqa: F401
 
     from pipeline import PipelineState, ISPAction, PipelineExecutor, pipeline_state_from_replay, pipeline_state_to_replay   # noqa: F401
     from search import SearchSpace, ConstraintResult   # noqa: F401
@@ -32,8 +33,8 @@ def test_imports() -> None:
 
     assert set(CANONICAL_ORDER) == set(OPERATORS.keys()), \
         f"registry mismatch: CANONICAL_ORDER={CANONICAL_ORDER} vs OPERATORS={sorted(OPERATORS.keys())}"
-    # 10 classical + 7 neural (Samsung Modular Neural ISP wrappers, V2-AI).
-    assert len(OPERATORS) == 17, f"expected 17 operators, got {len(OPERATORS)}"
+    # 10 classical + 7 neural (Samsung, V2-AI) + 9 infinite-isp (V2-AI).
+    assert len(OPERATORS) == 26, f"expected 26 operators, got {len(OPERATORS)}"
 
 
 if __name__ == "__main__":
