@@ -72,8 +72,15 @@ def evaluate(
     iou_thres: float,
     max_det: int,
     seed: int,
+    run_viz: bool = True,
+    viz_cases: int = 4,
 ) -> dict:
-    """Run mAP evaluation. Returns a dict of scalar metrics."""
+    """Run mAP evaluation. Returns a dict of scalar metrics.
+
+    When `run_viz=True` (the default), also writes canary visualizations to
+    `<project>/<name>/visualization/` — auto-routed to `run_detection` or
+    `run_human` based on the ckpt's `task` field. Set to False for pure mAP.
+    """
     set_seed(seed, deterministic=True)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -197,5 +204,24 @@ def evaluate(
     print(line)
     with open(save_dir / 'val_log.txt', 'w') as f:
         f.write(header + '\n' + line + '\n')
+
+    # V2-AI: bundled canary visualization. Task auto-detected from the
+    # ckpt's `task` field (defaults to detection). PNGs go under
+    # <project>/<name>/visualization/ next to val_log.txt.
+    if run_viz:
+        try:
+            ckpt_dict = torch.load(isp_weights, map_location=device, weights_only=False)
+            task = ckpt_dict.get('task', 'detection')
+            print(f"\n===== Visualization ({task}) — writing to {save_dir}/visualization/ =====")
+            if task in ('human_quality', 'human'):
+                from tools.visualization.visualizer import run_human
+                run_human(ckpt_dict, cfg, save_dir, viz_cases, device)
+            else:
+                from tools.visualization.visualizer import run_detection
+                run_detection(ckpt_dict, cfg, save_dir, viz_cases, device)
+        except Exception as e:
+            import traceback
+            print(f"[evaluate:viz] failed: {e}")
+            traceback.print_exc()
 
     return metrics

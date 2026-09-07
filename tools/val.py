@@ -45,13 +45,21 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument('--iou-thres', dest='iou_thres', type=float, default=0.6)
     p.add_argument('--max-det', dest='max_det', type=int, default=300)
     p.add_argument('--seed', type=int, default=0)
+
+    # V2-AI: automatic canary visualization after mAP. Off with --skip_viz.
+    p.add_argument('--skip_viz', action='store_true', default=False,
+                   help='skip the canary visualization step (default: run it)')
+    p.add_argument('--viz_cases', type=int, default=4,
+                   help='number of canary cases to visualize')
     return p.parse_args()
 
 
 def main() -> None:
     args = _parse_args()
     from engine.evaluator import evaluate
-    evaluate(**vars(args))
+    kwargs = vars(args)
+    kwargs['run_viz'] = not kwargs.pop('skip_viz')
+    evaluate(**kwargs)
 
 
 if __name__ == '__main__':
