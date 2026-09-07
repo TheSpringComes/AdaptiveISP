@@ -206,22 +206,27 @@ def evaluate(
         f.write(header + '\n' + line + '\n')
 
     # V2-AI: bundled canary visualization. Task auto-detected from the
-    # ckpt's `task` field (defaults to detection). PNGs go under
-    # <project>/<name>/visualization/ next to val_log.txt.
+    # ckpt's `task` field. The visualizer prints a lot of internal noise
+    # (yolo model re-load + per-case "wrote" lines), which would scroll the
+    # mAP line off screen; we redirect it and surface a single summary line.
     if run_viz:
+        import contextlib
+        import io
         try:
             ckpt_dict = torch.load(isp_weights, map_location=device, weights_only=False)
             task = ckpt_dict.get('task', 'detection')
-            print(f"\n===== Visualization ({task}) — writing to {save_dir}/visualization/ =====")
-            if task in ('human_quality', 'human'):
-                from tools.visualization.visualizer import run_human
-                run_human(ckpt_dict, cfg, save_dir, viz_cases, device)
-            else:
-                from tools.visualization.visualizer import run_detection
-                run_detection(ckpt_dict, cfg, save_dir, viz_cases, device)
+            viz_dir = save_dir / 'visualization'
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                if task in ('human_quality', 'human'):
+                    from tools.visualization.visualizer import run_human
+                    run_human(ckpt_dict, cfg, save_dir, viz_cases, device)
+                else:
+                    from tools.visualization.visualizer import run_detection
+                    run_detection(ckpt_dict, cfg, save_dir, viz_cases, device)
+            n_written = len(list(viz_dir.glob('case_*.png'))) if viz_dir.exists() else 0
+            print(f"visualization: {viz_cases} cases ({n_written} PNGs) → {viz_dir}/")
         except Exception as e:
-            import traceback
-            print(f"[evaluate:viz] failed: {e}")
-            traceback.print_exc()
+            print(f"visualization: FAILED ({e})")
 
     return metrics
