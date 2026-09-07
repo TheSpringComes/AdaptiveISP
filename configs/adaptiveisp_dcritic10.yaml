@@ -1,0 +1,119 @@
+# AdaptiveISP V1 config — sole source of truth for experiment-defining
+# parameters. `engine/trainer._load_config` reads this file into a Dict
+# and derives `num_state_dim` / `z_dim` / `max_iter_step` from the values
+# below.
+#
+# Split:
+#   - Fields under the top-level dict (backward-compat with the original
+#     paper config) are consumed directly by Trainer / Controller / Reward.
+#   - `train:` and `val:` name the CLI defaults so the experiment definition
+#     is one file; `tools/train.py` and `tools/val.py` treat these as
+#     defaults that CLI args (e.g. `--lr`, `--batch_size`) can override.
+#   - Environment / hardware knobs (`--workers`, `--seed`, `--weights` path,
+#     `--data_cfg` path) stay CLI-only; they do not define the experiment.
+
+# ---------- Operators ----------
+# Canonical order — matches isp.registry.CANONICAL_ORDER. Observation
+# channel layout, PipelineState op_usage columns, and PipelineExecutor
+# dispatch all key off this list. Classical ops come first so their
+# integer indices stay stable across V1 checkpoints; the 7 neural
+# operators are appended for V2-AI.
+operators:
+  - exposure
+  - gamma
+  - ccm
+  - sharpen
+  - denoise
+  - tone
+  - contrast
+  - saturation
+  - wnb
+  - whitebalance
+  - n_awb
+  - n_gain
+  - n_gtm
+  - n_chroma
+  - n_gamma
+  # - n_denoise
+  # - n_detail
+
+# Runtime cost per op (aligned with `operators` above). Consumed by
+# AdaptiveISPReward when runtime_penalty_enabled=true.
+filters_runtime: [1.7, 2.0, 1.9, 6.3, 10.0, 2.7, 2.1, 2.0, 1.9, 1.7,
+                  8.0, 3.0, 4.0, 0.4, 0.3]
+filter_runtime_penalty: false            # overridden by --runtime_penalty
+filter_runtime_penalty_lambda: 0.01
+
+# ---------- Logging / checkpointing ----------
+val_freq: 1000                            # (retained; unused after Stage 3 val block removal)
+save_model_freq: 1000
+print_freq: 100
+summary_freq: 100
+show_img_num: 2
+
+# ---------- RL / TD (Controller + Reward) ----------
+parameter_lr_mul: 1
+value_lr_mul: 1
+critic_lr_mul: 1
+critic_logit_multiplier: 10   # D-CriticScale10: smaller reward scale
+discount_factor: 1.0
+filter_usage_penalty: 20.0            # V2-AI: 2^k * 20 exp penalty — 40 for 2nd pick, 80 for 3rd, ...
+use_TD: true
+maximum_trajectory_length: 7
+over_length_keep_prob: 0.5
+all_reward: 1.0
+exploration: 0.2                      # V2-AI: raised from 0.05 for op-space coverage
+exploration_penalty: 0.05
+early_stop_penalty: 1.0
+detect_loss_weight: 1.0
+use_penalty: true
+test_steps: 5                              # ISP rollout steps at train + val
+grad_clip_norm: 1.0e-05                    # gradient clipping norm on Controller
+
+# ---------- Stop bonus (V2-AI, learned STOP action) ----------
+# Reward Controller for stopping when the current image already scores well.
+# Formula:  bonus = max(0, 1-detect_after) * stop_bonus_scale * critic_logit_multiplier
+# only fires on the step where action.is_stop is True. Off (=0) restores V1.
+# With detect_after=0.1, scale=0.5, mult=100 → bonus ~ 45 (comparable to a
+# few steps of task_delta), so learned STOP becomes attractive vs continuing.
+stop_bonus_scale: 0.01
+
+# ---------- Controller network ----------
+base_channels: 32
+dropout_keep_prob: 0.5
+fc1_size: 128
+feature_extractor_dims: 4096
+
+# ---------- Replay memory ----------
+replay_memory_size: 128
+fresh_raw_ratio: 0.25
+images_per_epoch: 1000                     # epoch definition; used by trainer to
+                                           # compute max_iter_step = epochs * this / batch
+
+# ---------- Latent noise ----------
+z_type: uniform
+z_dim_per_filter: 16
+
+# ---------- Trainer defaults (tools/train.py --* args fall back to these) ----------
+train:
+  batch_size: 8                            # paper's headline recipe
+  epochs: 800                              # paper's headline recipe
+  lr: 3.0e-05
+  imgsz: 512
+  use_truncated: true
+  bright_lo: 0.01                          # min mean brightness to count sample as valid
+  bright_hi: 0.9                           # max mean brightness ("max_bri")
+  lr_decay: 0.1                            # LambdaLR base
+  lr_segments: 3                           # LambdaLR segment count
+
+# ---------- Validation defaults (tools/val.py) ----------
+val:
+  conf_thres: 0.001                        # NMS confidence cutoff (vendored yolov3 default)
+  iou_thres: 0.6                           # NMS IoU threshold
+  max_det: 300                             # max detections per image after NMS
+  imgsz: 512                               # eval image size
+
+# ---------- Task-model constants (informational; wired via YOLOv3Detection) ----------
+task_model:
+  base_nc: 80                              # COCO class count used to scale hyp['cls']
+  reference_imgsz: 640                     # baseline imgsz used to scale hyp['obj']

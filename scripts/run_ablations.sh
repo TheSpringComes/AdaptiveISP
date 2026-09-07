@@ -37,6 +37,12 @@ HUMAN_ARGS=(
 declare -A ABL_KIND=(
     [d5]=detection      [hbase]=human      [hnostop]=human
     [hnorepeat]=human    [ht5]=human
+    # Batch 2: Human robustness
+    [husepen2]=human    [husepen1]=human
+    [hlambdassim]=human [hclassical]=human
+    # Batch 2: Detection robustness
+    [dusepen5]=detection [dusepen1]=detection
+    [dcritic10]=detection [dclassical]=detection
 )
 declare -A ABL_CFG=(
     [d5]=configs/adaptiveisp_steps5.yaml
@@ -44,6 +50,14 @@ declare -A ABL_CFG=(
     [hnostop]=configs/adaptiveisp_human_nostop.yaml
     [hnorepeat]=configs/adaptiveisp_human_norepeat.yaml
     [ht5]=configs/adaptiveisp_human_t5.yaml
+    [husepen2]=configs/adaptiveisp_human_usepen2.yaml
+    [husepen1]=configs/adaptiveisp_human_usepen1.yaml
+    [hlambdassim]=configs/adaptiveisp_human_lambdassim.yaml
+    [hclassical]=configs/adaptiveisp_human_classical.yaml
+    [dusepen5]=configs/adaptiveisp_dusepen5.yaml
+    [dusepen1]=configs/adaptiveisp_dusepen1.yaml
+    [dcritic10]=configs/adaptiveisp_dcritic10.yaml
+    [dclassical]=configs/adaptiveisp_dclassical.yaml
 )
 declare -A ABL_SAVE=(
     [d5]=v2ai_d5
@@ -51,6 +65,14 @@ declare -A ABL_SAVE=(
     [hnostop]=v2ai_hnostop
     [hnorepeat]=v2ai_hnorepeat
     [ht5]=v2ai_ht5
+    [husepen2]=v2ai_husepen2
+    [husepen1]=v2ai_husepen1
+    [hlambdassim]=v2ai_hlambdassim
+    [hclassical]=v2ai_hclassical
+    [dusepen5]=v2ai_dusepen5
+    [dusepen1]=v2ai_dusepen1
+    [dcritic10]=v2ai_dcritic10
+    [dclassical]=v2ai_dclassical
 )
 
 run_one () {

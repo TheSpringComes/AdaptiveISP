@@ -20,10 +20,25 @@ ABLATIONS = [
     # (id,       kind,        save_path,        cfg)
     ("d-base",   "detection", "lod-v2ai_full",  "test_steps=10 (baseline, previously trained)"),
     ("d5",       "detection", "lod-v2ai_d5",    "test_steps=5"),
-    ("hbase",    "human",     "v2ai_hbase",     "T=10, stop=on, repeat=on"),
+    ("dusepen5", "detection", "lod-v2ai_dusepen5",  "penalty base 5 (from 20)"),
+    ("dusepen1", "detection", "lod-v2ai_dusepen1",  "penalty base 1"),
+    ("dcritic10","detection", "lod-v2ai_dcritic10", "critic_logit_multiplier=10"),
+    ("dclassical","detection","lod-v2ai_dclassical","10 classical only"),
+    # Batch 3: Detection hyperparameter tuning
+    ("dclip01",  "detection", "lod-v2ai_dclip01",   "grad_clip 1e-5→0.1 (1e4× looser)"),
+    ("dlr1e-4",  "detection", "lod-v2ai_dlr1e-4",   "lr 3e-5→1e-4"),
+    ("dlr1e-5",  "detection", "lod-v2ai_dlr1e-5",   "lr 3e-5→1e-5"),
+    ("dbatch16", "detection", "lod-v2ai_dbatch16",  "batch_size 8→16"),
+    ("dexp05",   "detection", "lod-v2ai_dexp05",    "exploration 0.2→0.5"),
+    ("dexp01",   "detection", "lod-v2ai_dexp01",    "exploration 0.2→0.1"),
+    ("hbase",    "human",     "v2ai_hbase",     "T=10, stop=on, repeat=on (base 5)"),
     ("hnostop",  "human",     "v2ai_hnostop",   "T=10, stop=OFF, repeat=on"),
     ("hnorepeat","human",     "v2ai_hnorepeat", "T=10, stop=on, repeat=OFF"),
     ("ht5",      "human",     "v2ai_ht5",       "T=5, stop=on, repeat=on"),
+    ("husepen2", "human",     "v2ai_husepen2",  "repeat base 2 (softer)"),
+    ("husepen1", "human",     "v2ai_husepen1",  "repeat base 1 (softest)"),
+    ("hlambdassim","human",   "v2ai_hlambdassim","λ_ssim=2, λ_lpips=1"),
+    ("hclassical","human",    "v2ai_hclassical","10 classical only, no neural"),
 ]
 
 
@@ -55,7 +70,10 @@ def find_human_val(log_path: Path) -> dict | None:
         text = fh.read()
     if "===== VAL" not in text:
         return None
-    block = text.rsplit("===== VAL", 1)[1].split("=====", 1)[0]
+    # Look at everything after the LAST "===== VAL" marker; grep each metric
+    # line directly (no need to bracket the block since the metrics are all
+    # on their own labeled lines).
+    tail = text.rsplit("===== VAL", 1)[1]
     out: dict = {}
     for k, pat in [
         ("SSIM",   r"SSIM:\s*([-0-9.]+)"),
@@ -64,7 +82,7 @@ def find_human_val(log_path: Path) -> dict | None:
         ("length", r"mean rollout length:\s*([0-9.]+)/"),
         ("pct_stop", r"pct learned-STOP.*?:\s*([-0-9.]+)"),
     ]:
-        m = re.search(pat, block)
+        m = re.search(pat, tail)
         if m:
             out[k] = float(m.group(1))
     return out or None
