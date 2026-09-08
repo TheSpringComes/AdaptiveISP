@@ -22,24 +22,16 @@ from __future__ import annotations
 import datetime
 import logging
 import os
-import shutil
 import time
 from typing import Optional
 
 import numpy as np
 import torch
-import yaml
 from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
 
-from controller.adaptiveisp import AdaptiveISPController
 from controller.adaptiveisp.human_reward import HumanReward
-from engine.util import Tee
-from isp.registry import build_operator
-from pipeline import PipelineExecutor
-from search import SearchSpace
+from engine.base_trainer import BaseTrainer
 from tasks.human_quality import FiveKDataset, HumanQualityTask, collate_fivek
-from tasks.human_quality.metrics import quality_score
 
 
 logger = logging.getLogger(__name__)
@@ -48,31 +40,18 @@ if not logger.hasHandlers():
                         format='%(asctime)s %(name)s %(levelname)s: %(message)s')
 
 
-class HumanTrainer:
+class HumanTrainer(BaseTrainer):
     """Assembles Controller + Executor + HumanReward + FiveK loader."""
+
+    banner = ("HumanTrainer begin....\n"
+              "------- V2-AI: FiveK + Expert C  →  SSIM/LPIPS terminal reward ---------")
+    ckpt_prefix = "HumanISP"
 
     def __init__(self, args, task: str = "train") -> None:
         train = task in ("train", "train_val")
-        if train:
-            self.base_dir = os.path.join('experiments', args.save_path)
-            os.makedirs(self.base_dir, exist_ok=True)
-            self.log_dir = os.path.join(self.base_dir, "logs")
-            os.makedirs(self.log_dir, exist_ok=True)
-            self.ckpt_dir = os.path.join(self.base_dir, "ckpt")
-            os.makedirs(self.ckpt_dir, exist_ok=True)
-            self.tee = Tee(os.path.join(self.log_dir, 'log.txt'))
-            self.writer = SummaryWriter(self.log_dir)
-            self.image_dir = os.path.join(self.base_dir, "images")
-            os.makedirs(self.image_dir, exist_ok=True)
+        self._setup_experiment(args, save_enabled=train)
 
-            if os.path.exists(args.cfg):
-                shutil.copy(args.cfg, os.path.join(self.base_dir, os.path.basename(args.cfg)))
-            print("HumanTrainer begin....")
-            print("------- V2-AI: FiveK + Expert C  →  SSIM/LPIPS terminal reward ---------")
-
-        cfg = _load_config(args.cfg)
-        cfg.filter_runtime_penalty = getattr(args, 'runtime_penalty', False)
-        cfg.filter_runtime_penalty_lambda = getattr(args, 'runtime_penalty_lambda', 0.01)
+        cfg = self._load_cfg(args)
 
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -109,20 +88,10 @@ class HumanTrainer:
             collate_fn=collate_fivek,
         )
 
-        # --- Four subsystems (same as Detection Trainer) ---
-        ops = {name: build_operator(name).to(self.device) for name in cfg.operators}
-        self.runtime = PipelineExecutor(ops, cfg.operators)
-        self.search_space = SearchSpace(ops, cfg.operators)
-        self.controller = AdaptiveISPController(
-            ops, cfg.operators,
-            obs_hw=int(cfg.get('obs_hw', 64)),
-            mid_channels=cfg.base_channels,
-            fc1_size=cfg.fc1_size,
-            feature_dim=cfg.feature_extractor_dims,
-            dropout_keep_prob=cfg.dropout_keep_prob,
-            exploration=cfg.exploration,
-            max_steps=cfg.test_steps,
-        ).to(self.device)
+        # Pipeline subsystems shared with detection Trainer (Controller,
+        # Executor, SearchSpace) — task-agnostic construction lives in
+        # BaseTrainer.
+        self._build_pipeline_subsystems(cfg, self.device)
 
         self.reward_fn = HumanReward(
             n_ops=len(cfg.operators),
@@ -146,16 +115,11 @@ class HumanTrainer:
         print(f"FiveK train samples: {len(self.train_dataset)}   imgsz={imgsz}")
 
         self.args = args
-        images_per_epoch = int(cfg.get('images_per_epoch', len(self.train_dataset)))
-        cfg.max_iter_step = int(self.args.epochs * images_per_epoch // args.batch_size)
-        if cfg.show_img_num > args.batch_size:
-            cfg.show_img_num = args.batch_size
+        # `images_per_epoch` default = full dataset for Human (Detection uses 1000).
+        cfg.setdefault('images_per_epoch', len(self.train_dataset))
+        self._finalize_cfg_derived_fields(args, cfg)
 
         self.cfg = cfg
-        self._grad_clip_norm = float(cfg.get('grad_clip_norm', 1e-5))
-        train_cfg = cfg.get('train', {}) or {}
-        self._lr_decay = float(train_cfg.get('lr_decay', 0.1))
-        self._lr_segments = int(train_cfg.get('lr_segments', 3))
 
     # ----------------------- helpers -----------------------
 
@@ -169,19 +133,9 @@ class HumanTrainer:
     # ----------------------- train loop -----------------------
 
     def train(self) -> None:
-        if self.args.resume is not None:
-            print(f"Resume from {self.args.resume}")
-            ckpt = torch.load(self.args.resume, weights_only=False)
-            if 'controller_model' in ckpt:
-                self.controller.load_state_dict(ckpt['controller_model'])
-            else:
-                logger.warning("Resume ckpt is legacy; Controller has different architecture — starting fresh.")
-
-        optim = torch.optim.Adam(self.controller.parameters(), lr=self.args.lr)
-        max_iter_step = self.cfg.max_iter_step
-        lr_lambda = lambda it: self._lr_decay ** (1.0 * it * self._lr_segments / max(max_iter_step, 1))
-        scheduler = torch.optim.lr_scheduler.LambdaLR(optim, lr_lambda=lr_lambda)
-        print(f"init learning rate: {scheduler.get_last_lr()[0]}")
+        self._maybe_resume(self.args.resume)
+        optim, scheduler = self._build_optimizer_and_scheduler(self.args, self.cfg)
+        max_iter_step = int(self.cfg.max_iter_step)
 
         logger.info(f'Image size {self.args.imgsz} | '
                     f'Using {self.args.workers} dataloader workers | '
@@ -201,13 +155,7 @@ class HumanTrainer:
         # diagnostics. For Human, reward components are per-step (aggregated
         # across the T-step rollout inside each iter), then summed across
         # iters in the window. `n_steps` is total per-step samples in-window.
-        win = {
-            'n_iters': 0, 'n_steps': 0,
-            'task': 0.0, 'ent_pen': 0.0, 'use': 0.0, 'estop': 0.0,
-            'ovfl': 0.0, 'stop_b': 0.0, 'runt': 0.0,
-            'pol_ent': 0.0, 'argmax_hits': 0, 'argmax_seen': 0,
-            'n_stop': 0, 'n_stop_learned': 0, 'n_stop_timelimit': 0,
-        }
+        win = self._make_window()
         log_n_ops_plus1 = float(np.log(n_ops + 1))
 
         t_start = time.perf_counter()
@@ -215,26 +163,9 @@ class HumanTrainer:
         iter_prev_print = 0
         max_steps_display = int(self.cfg.test_steps)
 
-        def _fmt_elapsed(seconds: float) -> str:
-            seconds = max(0.0, float(seconds))
-            m, s = divmod(int(seconds + 0.5), 60)
-            h, m = divmod(m, 60)
-            return f"{h:d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
-
-        # For the per-step example line: how each op's first physical
-        # parameter is displayed. Neural ops -> `alpha=`, others -> raw val.
-        def _fmt_step(op_name: str, phys: np.ndarray) -> str:
-            first = float(phys[0]) if phys.size else 0.0
-            if op_name.startswith("n_"):
-                return f"{op_name}(α={first:.2f})"
-            if phys.size > 1:
-                return f"{op_name}({first:.2f},+{phys.size - 1})"
-            return f"{op_name}({first:.2f})"
-
         for it in range(max_iter_step + 1):
             self.controller.train()
             progress = float(it) / max(max_iter_step, 1)
-            win['n_iters'] += 1
 
             imgs, targets = self._next_batch()
             imgs = imgs.to(self.device, non_blocking=True).float()
@@ -243,12 +174,10 @@ class HumanTrainer:
             optim.zero_grad()
 
             # Precompute Q(I_0) once per rollout — saves T-1 LPIPS/SSIM calls.
-            q_initial, q0_parts = quality_score(
-                imgs, targets,
-                lambda_ssim=self.task_model.lambda_ssim,
-                lambda_lpips=self.task_model.lambda_lpips,
-                lpips_net=self.task_model.lpips_net,
-            )
+            # Route through the Task interface (parity with Detection's
+            # `task_model.compute_metrics(...)` call in engine.trainer).
+            m0 = self.task_model.compute_metrics(imgs, targets)
+            q_initial = m0['quality']
 
             state = self.runtime.initial_state(imgs)
             value_losses: list[torch.Tensor] = []
@@ -283,32 +212,8 @@ class HumanTrainer:
                     q_final_parts = q_parts
 
                 # V2-AI (A+C): accumulate reward-breakdown + policy stats.
-                win['n_steps'] += 1
-                win['task'] += float(breakdown.task_delta.mean().item())
-                win['ent_pen'] += float(breakdown.entropy_penalty.mean().item())
-                win['use'] += float(breakdown.usage_penalty.mean().item())
-                win['estop'] += float(breakdown.early_stop_penalty.mean().item())
-                win['ovfl'] += float(breakdown.overflow_penalty.mean().item())
-                win['runt'] += float(breakdown.runtime_penalty.mean().item())
-                if breakdown.stop_bonus is not None:
-                    win['stop_b'] += float(breakdown.stop_bonus.mean().item())
-                win['pol_ent'] += float(ctrl_out.entropy.mean().item())
-                with torch.no_grad():
-                    argmax_idx = ctrl_out.logits.argmax(dim=-1)
-                    sampled_idx = torch.where(
-                        ctrl_out.action.is_stop,
-                        torch.full_like(ctrl_out.action.op_indices, n_ops),
-                        ctrl_out.action.op_indices,
-                    )
-                    win['argmax_hits'] += int((argmax_idx == sampled_idx).sum().item())
-                    win['argmax_seen'] += int(sampled_idx.numel())
-                is_stop_batch = ctrl_out.action.is_stop.detach().cpu().numpy()
-                n_stop = int(is_stop_batch.sum())
-                is_last = int((new_state.step == T).sum().item())
-                n_stop_tl = min(n_stop, is_last)
-                win['n_stop'] += n_stop
-                win['n_stop_timelimit'] += n_stop_tl
-                win['n_stop_learned'] += (n_stop - n_stop_tl)
+                self._accumulate_window(win, breakdown, ctrl_out.entropy, ctrl_out,
+                                        new_state, n_ops, T)
 
                 # 1-step TD
                 old_value = ctrl_out.value
@@ -347,12 +252,9 @@ class HumanTrainer:
             if q_final_parts:
                 q_final = q_final_parts["quality"]
             else:
-                q_final, q_final_parts = quality_score(
-                    state.image, targets,
-                    lambda_ssim=self.task_model.lambda_ssim,
-                    lambda_lpips=self.task_model.lambda_lpips,
-                    lpips_net=self.task_model.lpips_net,
-                )
+                m_T = self.task_model.compute_metrics(state.image, targets)
+                q_final = m_T['quality']
+                q_final_parts = {'ssim': m_T['ssim'], 'lpips': m_T['lpips'], 'quality': m_T['quality']}
             q_delta = (q_final - q_initial).mean().item()
 
             # loss stats (moving averages) — agent + value tracked separately.
@@ -402,8 +304,8 @@ class HumanTrainer:
                 header_time = datetime.datetime.now().strftime("%H:%M:%S")
                 print(
                     f"----- iter {it}/{max_iter_step} [{header_time}] "
-                    f"elapsed {_fmt_elapsed(elapsed)} | {it_per_s:.2f} it/s | "
-                    f"ETA {_fmt_elapsed(eta)} -----"
+                    f"elapsed {self._fmt_elapsed(elapsed)} | {it_per_s:.2f} it/s | "
+                    f"ETA {self._fmt_elapsed(eta)} -----"
                 )
                 print(
                     f"  loss     agent={mloss_agent:.4f} val={mloss_value:.4f} "
@@ -443,7 +345,7 @@ class HumanTrainer:
                 )
 
                 # example — sample 0's full op sequence with per-step α / first param
-                seq_pretty = [_fmt_step(name, phys) for (name, phys) in traj_step_info]
+                seq_pretty = [self._fmt_step(name, phys) for (name, phys) in traj_step_info]
                 q0_s0 = q_initial[0, 0].item()
                 qT_s0 = q_final[0, 0].item()
                 print(
@@ -466,9 +368,7 @@ class HumanTrainer:
                     print(f"           cum neural {c_neural}/{c_total} = "
                           f"{100 * c_neural / max(c_total, 1):.1f}%")
                 op_pick_window[:] = 0
-                # V2-AI: reset windowed A+C accumulators.
-                for k in win:
-                    win[k] = 0 if isinstance(win[k], int) else 0.0
+                self._reset_window(win)
                 t_prev_print = t_now
                 iter_prev_print = it
 
@@ -477,16 +377,7 @@ class HumanTrainer:
                 print("output is nan or inf")
 
             if it % self.cfg.save_model_freq == 0:
-                self.controller.eval()
-                ckpt = {
-                    'iter': it,
-                    'controller_model': self.controller.state_dict(),
-                    'optimizer': optim.state_dict(),
-                    'operators': list(self.cfg.operators),
-                    'task': 'human_quality',
-                }
-                torch.save(ckpt, os.path.join(self.ckpt_dir, f'HumanISP_iter_{it}.pth'))
-                del ckpt
+                self._save_ckpt(it, optim, extra={'task': 'human_quality'})
 
         # Final val on the held-out 100 images (mean SSIM/LPIPS/Q + mean length).
         self._run_val(step=max_iter_step)
@@ -520,12 +411,9 @@ class HumanTrainer:
                     state = self.runtime.step(state, o.action)
                     if state.stopped.all():
                         break
-                q_final, parts = quality_score(
-                    state.image, targets_v,
-                    lambda_ssim=self.task_model.lambda_ssim,
-                    lambda_lpips=self.task_model.lambda_lpips,
-                    lpips_net=self.task_model.lpips_net,
-                )
+                m_v = self.task_model.compute_metrics(state.image, targets_v)
+                q_final = m_v['quality']
+                parts = {'ssim': m_v['ssim'], 'lpips': m_v['lpips']}
                 b = imgs_v.shape[0]
                 ssim_sum += parts['ssim'].sum().item()
                 lpips_sum += parts['lpips'].sum().item()
@@ -558,23 +446,6 @@ class HumanTrainer:
         print(f"  pct learned-STOP (before time-limit): {100 * metrics['val/pct_learned_stop']:.1f}%")
         print("=================================\n")
         return metrics
-
-
-def _load_config(path: str):
-    """Load a config yaml. Returns a util.Dict for dot-attribute access."""
-    from engine.util import Dict
-
-    with open(path, "r") as f:
-        data = yaml.safe_load(f)
-    cfg = Dict(data)
-
-    if 'operators' not in cfg:
-        raise ValueError(f"config missing 'operators' list: {path}")
-    if 'num_state_dim' not in cfg:
-        cfg.num_state_dim = 3 + len(cfg.operators)
-    if 'z_dim' not in cfg:
-        cfg.z_dim = 3 + len(cfg.operators) * cfg.get('z_dim_per_filter', 16)
-    return cfg
 
 
 __all__ = ["HumanTrainer"]

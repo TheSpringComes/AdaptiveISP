@@ -14,6 +14,8 @@ cd "$(dirname "$0")/.."   # → repo root
 mkdir -p experiments logs_ablation
 
 DETECTION_ARGS=(
+    --task detection
+    --mode train
     --data_name lod
     --data_cfg tasks/third_party/yolov3/data/lod.yaml
     --batch_size 8
@@ -21,16 +23,15 @@ DETECTION_ARGS=(
     --workers 4
     --lr 3e-5
     --epochs 60
-    --task train
 )
 
 HUMAN_ARGS=(
+    --task human
     --batch_size 4
     --imgsz 512
     --workers 4
     --lr 3e-5
     --epochs 60
-    --task train
 )
 
 # Ablation registry — (id, kind, cfg, save_path)
@@ -94,7 +95,7 @@ run_one () {
             --cfg "$cfg" \
             2>&1 | tee "$log"
     else
-        python -u tools/train_human.py \
+        python -u tools/train.py \
             "${HUMAN_ARGS[@]}" \
             --save_path "$save" \
             --cfg "$cfg" \

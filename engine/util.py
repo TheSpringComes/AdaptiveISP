@@ -6,6 +6,35 @@ import sys
 import random
 import numpy as np
 import threading
+import yaml
+
+
+def load_config(path: str):
+    """Load a config yaml (or fall back to a python module for legacy .py paths).
+
+    Returns a `Dict` for dot-attribute access, with derived fields populated:
+      - `num_state_dim`  (defaults to 3 + len(operators))
+      - `z_dim`          (defaults to 3 + len(operators) * z_dim_per_filter)
+    Requires the config to define an `operators` list; raises `ValueError`
+    otherwise. Shared by `engine.trainer`, `engine.trainer_human`, and
+    `engine.evaluator` so all three paths see identical derived fields.
+    """
+    if path.endswith(".yaml") or path.endswith(".yml"):
+        with open(path, "r") as f:
+            data = yaml.safe_load(f)
+        cfg = Dict(data)
+    else:
+        # Legacy: python module import (e.g., --cfg config)
+        import importlib
+        cfg = importlib.import_module(path).cfg
+
+    if 'operators' not in cfg:
+        raise ValueError(f"config missing 'operators' list: {path}")
+    if 'num_state_dim' not in cfg:
+        cfg.num_state_dim = 3 + len(cfg.operators)
+    if 'z_dim' not in cfg:
+        cfg.z_dim = 3 + len(cfg.operators) * cfg.get('z_dim_per_filter', 16)
+    return cfg
 
 
 def set_seed(seed: int, deterministic: bool = True) -> None:

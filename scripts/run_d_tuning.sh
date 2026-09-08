@@ -8,7 +8,8 @@ cd "$(dirname "$0")/.."   # → repo root
 mkdir -p experiments logs_ablation
 
 DATA_ARGS=(
-    --task train
+    --task detection
+    --mode train
     --data_name lod
     --data_cfg tasks/third_party/yolov3/data/lod.yaml
     --imgsz 512

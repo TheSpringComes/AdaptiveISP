@@ -79,7 +79,7 @@ engine/
 └─ evaluator.py                 mAP + auto-viz
 configs/                        adaptiveisp.yaml (main) + 15 ablation variants
 tools/
-├─ train.py / train_human.py    training CLIs
+├─ train.py                     training CLI (`--task {detection,human}`)
 ├─ val.py                       mAP + auto-viz CLI
 └─ visualization/visualizer.py  standalone canary tool
 scripts/                        ablation orchestrators + summarizer
@@ -119,7 +119,7 @@ if you enable any `n_*` op in the config.
 ### Detection (LOD, V1 baseline recipe with V2-AI extensions active)
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python tools/train.py \
+CUDA_VISIBLE_DEVICES=0 python tools/train.py --task detection \
     --data_name lod \
     --data_cfg tasks/third_party/yolov3/data/lod.yaml \
     --batch_size 8 --epochs 800 \
@@ -132,7 +132,7 @@ every 1 000 iters, in schema `{'controller_model', 'optimizer', 'iter', 'operato
 ### Human Quality (FiveK + Expert C)
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python tools/train_human.py \
+CUDA_VISIBLE_DEVICES=0 python tools/train.py --task human \
     --batch_size 4 --epochs 30 --imgsz 512 \
     --save_path v2ai_human --cfg configs/adaptiveisp_human.yaml
 ```

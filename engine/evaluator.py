@@ -28,8 +28,7 @@ import tasks  # noqa: F401
 from tasks.detection.implementations.yolov3 import YOLOv3Detection
 from tasks.detection.dataloader import create_dataloader_real_hr
 from controller.adaptiveisp import AdaptiveISPController
-from engine.trainer import _load_config
-from engine.util import set_seed
+from engine.util import set_seed, load_config
 from isp.registry import build_operator
 from pipeline import PipelineExecutor, pipeline_state_from_replay
 from search import SearchSpace
@@ -84,7 +83,7 @@ def evaluate(
     set_seed(seed, deterministic=True)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    cfg = _load_config(cfg_path)
+    cfg = load_config(cfg_path)
     save_dir = Path(project) / name
     save_dir.mkdir(parents=True, exist_ok=exist_ok)
 
