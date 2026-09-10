@@ -116,6 +116,9 @@ grad_clip_norm: 1.0e-05
 # ratio as Detection E3.
 stop_bonus_scale: 0.05
 
+# Force at least this many ops before STOP is allowed.
+min_rollout_length: 3
+
 # ---------- Controller network ----------
 base_channels: 32
 dropout_keep_prob: 0.5

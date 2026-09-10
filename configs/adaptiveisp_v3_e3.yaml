@@ -90,6 +90,7 @@ rl_algo:
     minibatch_size: 64
     grad_clip_norm: 0.5
     gae_lambda: 0.95
+    gamma: 0.95   # discount long-horizon returns so value_net can fit
 
 # ---------- Logging / checkpointing ----------
 val_freq: 1000
@@ -102,7 +103,12 @@ show_img_num: 2
 parameter_lr_mul: 1
 value_lr_mul: 1
 critic_lr_mul: 1
-critic_logit_multiplier: 100
+# V3-A3 note: dropped from 100 (Detection legacy) to 10 (Human parity).
+# With mul=100 and T=8, per-step reward can hit ±5, cumulative return
+# ±40 — value_net can't track and value_loss explodes (observed 19815
+# at iter 100 in a smoke run). At mul=10 the return scale drops to ±4,
+# well within an MSE-fittable band.
+critic_logit_multiplier: 10
 discount_factor: 1.0
 filter_usage_penalty: 20.0
 use_TD: true
@@ -117,11 +123,13 @@ use_penalty: true
 test_steps: 8
 grad_clip_norm: 1.0e-05
 
-# PPO-normalized advantages make the raw stop_bonus scale much heavier
-# than under Actor-Critic. Original 0.01 × critic_logit_multiplier (100) =
-# effective 1.0 per stop, which dominates and collapses canary rollouts
-# to len=1. Dropped by 10× for E3.
-stop_bonus_scale: 0.001
+# Stop bonus — with critic_logit_multiplier reduced to 10, keep effective
+# stop reward at 0.01 × 10 ≈ 0.1 (same magnitude as previous 0.001 × 100).
+stop_bonus_scale: 0.01
+
+# Force at least this many ops before STOP is allowed. Prevents PPO's
+# "1-step then STOP" collapse observed in early smoke runs.
+min_rollout_length: 3
 
 # ---------- Controller network ----------
 base_channels: 32

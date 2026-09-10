@@ -42,6 +42,7 @@ class AdaptiveISPController(Controller):
         dropout_keep_prob: float = 0.5,
         exploration: float = 0.05,
         max_steps: int = 5,
+        min_rollout_length: int = 1,
     ) -> None:
         super().__init__()
         missing = [n for n in canonical_order if n not in operators]
@@ -85,6 +86,11 @@ class AdaptiveISPController(Controller):
         )
         self.exploration = float(exploration)
         self.max_steps = int(max_steps)
+        # STOP action is forbidden until state.step >= min_rollout_length.
+        # =1 (default) matches the pre-tune behavior "STOP forbidden only at
+        # step 0". Raise to 3 in E3 configs so PPO can't short-circuit to
+        # a 1-step rollout early in training.
+        self.min_rollout_length = int(min_rollout_length)
 
     def _build_obs(self, state: PipelineState) -> torch.Tensor:
         img = self.down_sample(state.image)
@@ -115,10 +121,10 @@ class AdaptiveISPController(Controller):
         pdf = F.softmax(logits, dim=1) + 1e-37
         pdf = pdf * (1.0 - self.exploration) + self.exploration / n_actions
 
-        # Extend the op-mask with a STOP column. STOP is forbidden at step 0
-        # (policy must apply at least one op before it can stop) — otherwise
-        # the trivial all-STOP policy is a shallow local optimum.
-        stop_col_ok = (state.step > 0).float().unsqueeze(-1)      # (B, 1)
+        # Extend the op-mask with a STOP column. STOP is forbidden while
+        # state.step < self.min_rollout_length (>=1) — otherwise the trivial
+        # all-STOP policy is a shallow local optimum that PPO gladly finds.
+        stop_col_ok = (state.step >= self.min_rollout_length).float().unsqueeze(-1)      # (B, 1)
         extended_mask = torch.cat(
             [constraint.op_mask.float(), stop_col_ok], dim=1,
         )                                                          # [B, n_ops + 1]
@@ -201,7 +207,7 @@ class AdaptiveISPController(Controller):
         pdf = F.softmax(logits, dim=1) + 1e-37
         pdf = pdf * (1.0 - self.exploration) + self.exploration / n_actions
 
-        stop_col_ok = (state.step > 0).float().unsqueeze(-1)
+        stop_col_ok = (state.step >= self.min_rollout_length).float().unsqueeze(-1)
         extended_mask = torch.cat(
             [constraint.op_mask.float(), stop_col_ok], dim=1,
         )

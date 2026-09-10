@@ -113,6 +113,7 @@ class BaseTrainer:
             dropout_keep_prob=cfg.dropout_keep_prob,
             exploration=cfg.exploration,
             max_steps=cfg.test_steps,
+            min_rollout_length=int(cfg.get('min_rollout_length', 1)),
         ).to(device)
 
     def _finalize_cfg_derived_fields(self, args, cfg) -> None:
