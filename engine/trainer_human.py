@@ -171,6 +171,15 @@ class HumanTrainer(BaseTrainer):
             imgs = imgs.to(self.device, non_blocking=True).float()
             targets = targets.to(self.device, non_blocking=True).float()
 
+            # V3-A1: fixed Canonical Backbone runs before the Controller sees
+            # the image. When disabled (E0 parity), self.backbone is None and
+            # this is a no-op. `m0` is computed on the post-backbone image so
+            # the reward Q(final) - Q(initial) measures the Controller's
+            # contribution alone.
+            if self.backbone is not None:
+                with torch.no_grad():
+                    imgs = self.backbone(imgs).clamp(0.0, 1.0)
+
             optim.zero_grad()
 
             # Precompute Q(I_0) once per rollout — saves T-1 LPIPS/SSIM calls.
@@ -396,6 +405,8 @@ class HumanTrainer(BaseTrainer):
             for imgs_v, targets_v in self.val_loader:
                 imgs_v = imgs_v.to(self.device, non_blocking=True).float()
                 targets_v = targets_v.to(self.device, non_blocking=True).float()
+                if self.backbone is not None:
+                    imgs_v = self.backbone(imgs_v).clamp(0.0, 1.0)
                 state = self.runtime.initial_state(imgs_v)
                 lengths = torch.zeros(imgs_v.shape[0], dtype=torch.long, device=self.device)
                 stopped_learned = torch.zeros(imgs_v.shape[0], dtype=torch.bool, device=self.device)

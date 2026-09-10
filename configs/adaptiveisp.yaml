@@ -55,6 +55,36 @@ filters_runtime: [1.7, 2.0, 1.9, 6.3, 10.0, 2.7, 2.1, 2.0, 1.9, 1.7,
 filter_runtime_penalty: false            # overridden by --runtime_penalty
 filter_runtime_penalty_lambda: 0.01
 
+# ---------- Canonical Backbone (V3-A1 阶段 1) ----------
+# When enabled, a fixed Infinite-ISP-style pipeline runs BEFORE the Controller
+# on every fresh sample, producing baseline sRGB from simulated linear-cam RGB.
+# Stages (all fixed, no learnable params):
+#   gray-world AWB → calibrated cam2rgb CCM → smoothstep GTM → sRGB gamma
+# See `pipeline/backbone.py`. Default off = V2 behavior (E0 baseline).
+canonical_backbone:
+  enabled: false
+
+# ---------- Action Mask (V3-A2 阶段 1) ----------
+# Dynamic op-mask priors composed by search.priors.action_mask. Each block
+# is opt-in; leaving all `enabled: false` restores identity behavior (V2).
+# See `search/priors/action_mask.py` for semantics.
+action_mask:
+  # 1. No repeat — every op is single-use per rollout unless whitelisted.
+  no_repeat:
+    enabled: false
+    exempt: []       # op names that MAY be applied more than once
+  # 2. Order — once any op in `after` has been used, every op in `before`
+  #    is forbidden. Rules with unknown op names are silently dropped so
+  #    the block is portable across op subsets.
+  order:
+    enabled: false
+    rules: []
+  # 3. Group budget — total picks per group ≤ max_select. Same-class
+  #    mutex is just max_select=1.
+  group_budget:
+    enabled: false
+    groups: []
+
 # ---------- Logging / checkpointing ----------
 val_freq: 1000                            # (retained; unused after Stage 3 val block removal)
 save_model_freq: 1000

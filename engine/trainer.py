@@ -77,6 +77,12 @@ class Trainer(BaseTrainer):
         gs = self.task_model.gs
         args.imgsz = self.task_model.align_imgsz(args.imgsz)
 
+        # Pipeline subsystems (Controller, Executor, SearchSpace, Backbone).
+        # Built BEFORE ReplayMemory so the (optional) V3 CanonicalBackbone is
+        # available at pool-fill time — the pool invariant is
+        # "images stored here are already post-backbone".
+        self._build_pipeline_subsystems(cfg, self.device)
+
         # Data loaders (ReplayMemory holds partial-trajectory (image, state) pairs)
         train_path, val_path = data_dict['train'], data_dict['val']
         if task == "test":
@@ -85,22 +91,22 @@ class Trainer(BaseTrainer):
                                           single_cls=False, hyp=hyp, augment=False, cache=False, pad=0.0,
                                           rect=False, image_weights=False, prefix='train: ', limit=-1,
                                           add_noise=args.add_noise, data_name=args.data_name, brightness_range=args.bri_range,
-                                          noise_level=args.noise_level, use_linear=args.use_linear)
+                                          noise_level=args.noise_level, use_linear=args.use_linear,
+                                          backbone=self.backbone, backbone_device=self.device)
         if val:
             self.val_loader = ReplayMemory(cfg, val, val_path, args.imgsz, args.batch_size, gs,
                                             single_cls=False, hyp=hyp, augment=False, cache=False, pad=0.0,
                                             rect=False, image_weights=False, prefix='val: ', limit=-1,
                                             add_noise=args.add_noise, data_name=args.data_name, brightness_range=args.bri_range,
-                                            noise_level=args.noise_level, use_linear=args.use_linear)
+                                            noise_level=args.noise_level, use_linear=args.use_linear,
+                                            backbone=self.backbone, backbone_device=self.device)
             self.val_loader = self.val_loader.get_feed_dict_and_states(8)
 
         self.task_model.attach_class_weights(self.train_loader.dataset.labels, nc)
         self.task_model.attach_names(data_dict['names'])
         self.data_dict = data_dict
 
-        # Pipeline subsystems shared with HumanTrainer (Controller, Executor,
-        # SearchSpace) — task-agnostic construction lives in BaseTrainer.
-        self._build_pipeline_subsystems(cfg, self.device)
+        # Reward. (Pipeline subsystems already built above.)
         self.reward_fn = AdaptiveISPReward(
             n_ops=len(cfg.operators),
             max_steps=cfg.test_steps,
@@ -152,6 +158,10 @@ class Trainer(BaseTrainer):
         `dataset.get_next_batch` returns either torch tensors (Normalize path)
         or numpy arrays (RAW path) depending on the loader class — normalize
         both here.
+
+        V3-A1: when `self.backbone` is set, apply it once so canary rollouts
+        start from the same baseline sRGB state as training samples do
+        (the pool holds post-backbone images).
         """
         try:
             im_list, _, _, _ = self.train_loader.dataset.get_next_batch(1)
@@ -161,7 +171,11 @@ class Trainer(BaseTrainer):
         im = im_list[0]
         if isinstance(im, np.ndarray):
             im = torch.from_numpy(im)
-        return im.unsqueeze(0).to(self.device).float()
+        im = im.unsqueeze(0).to(self.device).float()
+        if self.backbone is not None:
+            with torch.no_grad():
+                im = self.backbone(im).clamp(0.0, 1.0)
+        return im
 
     # ------------------------- shadow rollout helper -------------------------
 

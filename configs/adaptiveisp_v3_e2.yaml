@@ -1,0 +1,162 @@
+# AdaptiveISP V3 experiment E2 — Detection + Backbone + Action Mask.
+#
+# Ablation direction:
+#   E0 (adaptiveisp.yaml)     backbone off, mask off              V2 baseline
+#   E1 (adaptiveisp_v3_e1.yaml)  backbone on,  mask off            +A1
+#   E2 (this file)            backbone on,  mask on               +A1 +A2
+#
+# Beyond E1 this file only adds the `action_mask:` block. Reward, RL algo
+# (Actor-Critic), op list, and every other knob are held identical to E1,
+# so E1→E2 diffs isolate the mask effect.
+
+operators:
+  - exposure
+  - gamma
+  - ccm
+  - sharpen
+  - denoise
+  - tone
+  - contrast
+  - saturation
+  - wnb
+  - whitebalance
+  - n_awb
+  - n_gain
+  - n_gtm
+  - n_chroma
+  - n_gamma
+  - inf_awb_grayworld
+  - inf_awb_norm2
+  - inf_awb_pca
+  - inf_digital_gain
+  - inf_ldci
+  - inf_unsharp
+  - inf_nlm
+  - inf_ebf
+  - inf_saturation
+
+filters_runtime: [1.7, 2.0, 1.9, 6.3, 10.0, 2.7, 2.1, 2.0, 1.9, 1.7,
+                  8.0, 3.0, 4.0, 0.4, 0.3,
+                  1.5, 1.5, 3.0, 1.0, 3.5, 5.0, 12.0, 8.0, 1.7]
+filter_runtime_penalty: false
+filter_runtime_penalty_lambda: 0.01
+
+# ---------- Canonical Backbone (V3-A1 阶段 1) — ON ----------
+canonical_backbone:
+  enabled: true
+
+# ---------- Action Mask (V3-A2 阶段 1) — ON ----------
+# Motivation from the 5-epoch E1 smoke:
+#   canary  denoise → contrast → n_chroma → n_chroma → n_chroma → n_chroma → n_chroma → STOP
+# The Controller happily repeats a single neural op with decaying α. Masks
+# below prevent that pathology while leaving the RL free to discover useful
+# op combinations.
+action_mask:
+  # Single-use per rollout, no whitelist. Every op is picked at most once.
+  no_repeat:
+    enabled: true
+    exempt: []
+
+  # Hard order rules — pipeline-order priors that are safe to enforce.
+  order:
+    enabled: true
+    rules:
+      # Denoise must precede Sharpen (both classical and its Infinite-ISP
+      # variants). Once any sharpen op has been used, all denoise ops are
+      # forbidden for the rest of the rollout.
+      - after:  [sharpen, inf_unsharp]
+        before: [denoise, inf_nlm, inf_ebf]
+
+  # Group budgets — same-class mutex and soft tonal cap.
+  group_budget:
+    enabled: true
+    groups:
+      # 6 AWB flavors → pick at most one.
+      - name: awb
+        ops: [whitebalance, wnb, n_awb,
+              inf_awb_grayworld, inf_awb_norm2, inf_awb_pca]
+        max_select: 1
+      # 3 Denoise flavors (classical + 2 Infinite-ISP) → pick at most one.
+      - name: denoise
+        ops: [denoise, inf_nlm, inf_ebf]
+        max_select: 1
+      # 2 Sharpen flavors → pick at most one.
+      - name: sharpen
+        ops: [sharpen, inf_unsharp]
+        max_select: 1
+      # 2 Saturation flavors → pick at most one.
+      - name: saturation
+        ops: [saturation, inf_saturation]
+        max_select: 1
+      # Tonal group — total exposure/gamma/tone/contrast picks ≤ 2 to
+      # avoid over-processing. Neural GTM/gamma count against the budget.
+      - name: tonal
+        ops: [exposure, gamma, tone, contrast, n_gamma, n_gtm, inf_ldci]
+        max_select: 2
+
+# ---------- Logging / checkpointing ----------
+val_freq: 1000
+save_model_freq: 1000
+print_freq: 100
+summary_freq: 100
+show_img_num: 2
+
+# ---------- RL / TD ----------
+parameter_lr_mul: 1
+value_lr_mul: 1
+critic_lr_mul: 1
+critic_logit_multiplier: 100
+discount_factor: 1.0
+filter_usage_penalty: 20.0
+use_TD: true
+maximum_trajectory_length: 7
+over_length_keep_prob: 0.5
+all_reward: 1.0
+exploration: 0.2
+exploration_penalty: 0.05
+early_stop_penalty: 1.0
+detect_loss_weight: 1.0
+use_penalty: true
+test_steps: 8
+grad_clip_norm: 1.0e-05
+
+stop_bonus_scale: 0.01
+
+# ---------- Controller network ----------
+base_channels: 32
+dropout_keep_prob: 0.5
+fc1_size: 128
+feature_extractor_dims: 4096
+
+# ---------- Replay memory ----------
+replay_memory_size: 128
+fresh_raw_ratio: 0.25
+images_per_epoch: 1000
+
+# ---------- Latent noise ----------
+z_type: uniform
+z_dim_per_filter: 16
+
+# ---------- Trainer defaults ----------
+train:
+  batch_size: 8
+  epochs: 800
+  lr: 3.0e-05
+  imgsz: 512
+  use_truncated: true
+  bright_lo: 0.01
+  bright_hi: 0.9
+  lr_decay: 0.1
+  lr_segments: 3
+
+# ---------- Validation defaults ----------
+val:
+  conf_thres: 0.001
+  iou_thres: 0.6
+  max_det: 300
+  imgsz: 512
+
+# ---------- Task-model constants ----------
+task_model:
+  base_nc: 80
+  reference_imgsz: 640

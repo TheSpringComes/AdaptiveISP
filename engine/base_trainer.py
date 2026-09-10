@@ -32,8 +32,9 @@ from torch.utils.tensorboard import SummaryWriter
 from controller.adaptiveisp import AdaptiveISPController
 from engine.util import Tee, load_config
 from isp.registry import build_operator
-from pipeline import PipelineExecutor
+from pipeline import CanonicalBackbone, PipelineExecutor
 from search import SearchSpace
+from search.priors.action_mask import build_from_config as build_action_mask
 
 
 logger = logging.getLogger(__name__)
@@ -84,10 +85,25 @@ class BaseTrainer:
         `cfg.operators` for the op list; every other cfg field consumed here
         (`base_channels`, `fc1_size`, `feature_extractor_dims`, ...) is
         identical between Detection and Human configs.
+
+        Also builds `self.backbone`: a fixed CanonicalBackbone when
+        `cfg.canonical_backbone.enabled` is truthy, else None. Subclasses
+        (and evaluator) apply it at their data-load boundary.
         """
         ops = {name: build_operator(name).to(device) for name in cfg.operators}
         self.runtime = PipelineExecutor(ops, cfg.operators)
-        self.search_space = SearchSpace(ops, cfg.operators)
+        # V3-A2: compose action-mask priors from cfg.action_mask (empty when
+        # section absent — V2 identity behavior preserved).
+        action_mask_pipeline = build_action_mask(
+            cfg.get('action_mask', {}) or {}, cfg.operators,
+        )
+        priors = [action_mask_pipeline] if action_mask_pipeline.priors else None
+        self.search_space = SearchSpace(ops, cfg.operators, priors=priors)
+        bb_cfg = cfg.get('canonical_backbone', {}) or {}
+        self.backbone = (
+            CanonicalBackbone().to(device) if bool(bb_cfg.get('enabled', False))
+            else None
+        )
         self.controller = AdaptiveISPController(
             ops, cfg.operators,
             obs_hw=int(cfg.get('obs_hw', 64)),
