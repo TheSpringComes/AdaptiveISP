@@ -137,6 +137,23 @@ class HumanTrainer(BaseTrainer):
         optim, scheduler = self._build_optimizer_and_scheduler(self.args, self.cfg)
         max_iter_step = int(self.cfg.max_iter_step)
 
+        # V3-E3: opt-in PPO path. `rl_algo.name == 'ppo'` swaps the per-iter
+        # 1-step TD loss for T-step rollout → GAE → K-epoch PPO update.
+        # Everything else (dataset, backbone, reward_fn, canary/val, print
+        # block) is shared with the Actor-Critic path.
+        rl_cfg = self.cfg.get('rl_algo', {}) or {}
+        use_ppo = str(rl_cfg.get('name', 'actor_critic')).lower() == 'ppo'
+        if use_ppo:
+            from controller.adaptiveisp import PPOUpdater
+            from pipeline import TrajectoryBuffer
+            ppo_cfg = rl_cfg.get('ppo', {}) or {}
+            self._ppo = PPOUpdater(ppo_cfg)
+            self._TrajectoryBuffer = TrajectoryBuffer
+            self._gae_gamma = float(ppo_cfg.get('gamma', self.cfg.discount_factor))
+            self._gae_lambda = float(ppo_cfg.get('gae_lambda', 0.95))
+            print(f"RL algo: PPO (K={self._ppo.epochs} clip={self._ppo.clip_range} "
+                  f"gae_lambda={self._gae_lambda})")
+
         logger.info(f'Image size {self.args.imgsz} | '
                     f'Using {self.args.workers} dataloader workers | '
                     f'Logging results to {self.args.save_path}')
@@ -194,6 +211,10 @@ class HumanTrainer(BaseTrainer):
             traj_step_info: list[tuple[str, np.ndarray]] = []   # sample 0's per-step (op_name, phys)
             reward_totals: list[torch.Tensor] = []
             q_final_parts: dict[str, torch.Tensor] = {}
+            # V3-E3 PPO branch state
+            if use_ppo:
+                buf = self._TrajectoryBuffer(max_steps=T, batch_size=imgs.shape[0])
+                param_loss_terms: list[torch.Tensor] = []
 
             for t in range(T):
                 constraint = self.search_space.valid_actions(state)
@@ -224,36 +245,85 @@ class HumanTrainer(BaseTrainer):
                 self._accumulate_window(win, breakdown, ctrl_out.entropy, ctrl_out,
                                         new_state, n_ops, T)
 
-                # 1-step TD
-                old_value = ctrl_out.value
-                new_value = self.controller.value_net(new_state)
-                stopped_after = new_state.stopped.float().unsqueeze(-1)
-                new_value = new_value * (1.0 - stopped_after)
-                q_value = r + (1.0 - stopped_after) * self.cfg.discount_factor * new_value
-                advantage = q_value.detach() - old_value
-                value_loss = torch.mean(advantage ** 2)
-
-                if self.cfg.use_TD:
-                    routine_loss = -q_value * self.cfg.parameter_lr_mul
-                    policy_advantage = -advantage
+                if use_ppo:
+                    # PPO branch: collect trajectory for K-epoch policy/value
+                    # update AND accumulate image-differentiable op-param loss
+                    # (task_delta − overflow_penalty). Alive samples only —
+                    # already-stopped ones' image is untouched by the executor,
+                    # so their task_delta is ~0 anyway.
+                    alive_mask = (~state.stopped).float().unsqueeze(-1)
+                    param_loss_terms.append(
+                        -((breakdown.task_delta - breakdown.overflow_penalty) * alive_mask).mean()
+                    )
+                    buf.push(state=state, action=ctrl_out.action,
+                             log_prob=ctrl_out.log_prob, value=ctrl_out.value,
+                             entropy=ctrl_out.entropy, reward=r)
                 else:
-                    routine_loss = -r
-                    policy_advantage = -r
-                agent_loss = torch.mean(
-                    routine_loss + ctrl_out.log_prob * policy_advantage.detach()
-                )
-                value_losses.append(value_loss)
-                agent_losses.append(agent_loss)
+                    # Actor-Critic branch (legacy): per-step 1-step TD.
+                    old_value = ctrl_out.value
+                    new_value = self.controller.value_net(new_state)
+                    stopped_after = new_state.stopped.float().unsqueeze(-1)
+                    new_value = new_value * (1.0 - stopped_after)
+                    q_value = r + (1.0 - stopped_after) * self.cfg.discount_factor * new_value
+                    advantage = q_value.detach() - old_value
+                    value_loss = torch.mean(advantage ** 2)
+
+                    if self.cfg.use_TD:
+                        routine_loss = -q_value * self.cfg.parameter_lr_mul
+                        policy_advantage = -advantage
+                    else:
+                        routine_loss = -r
+                        policy_advantage = -r
+                    agent_loss = torch.mean(
+                        routine_loss + ctrl_out.log_prob * policy_advantage.detach()
+                    )
+                    value_losses.append(value_loss)
+                    agent_losses.append(agent_loss)
 
                 state = new_state
                 if state.stopped.all():
                     break
 
-            total_loss = torch.stack(value_losses).sum() + torch.stack(agent_losses).sum()
-            total_loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.controller.parameters(), self._grad_clip_norm)
-            optim.step()
-            scheduler.step()
+            if use_ppo:
+                # 1. Op-param update (image-path gradients only).
+                if param_loss_terms:
+                    total_param_loss = torch.stack(param_loss_terms).sum()
+                else:
+                    total_param_loss = torch.zeros((), device=self.device)
+                # optim.zero_grad() already called before rollout; backward
+                # here fills gradients only on param_features + param_heads
+                # (verified — image path is independent of select_head/value_net).
+                total_param_loss.backward()
+                torch.nn.utils.clip_grad_norm_(
+                    self.controller.parameters(), self._grad_clip_norm,
+                )
+                optim.step()
+                scheduler.step()
+
+                # 2. PPO K-epoch update — policy + value only. `PPOUpdater`
+                # calls zero_grad + backward + step internally each minibatch,
+                # so op-params (grad=None after each of its zero_grad) stay
+                # frozen through the K epochs.
+                with torch.no_grad():
+                    bootstrap = self.controller.value_net(state).reshape(-1)
+                buf.compute_gae(
+                    gamma=self._gae_gamma, lam=self._gae_lambda,
+                    bootstrap_value=bootstrap,
+                )
+                flat = buf.flat_alive_batch()
+                ppo_stats = self._ppo.update(
+                    self.controller, self.search_space, optim, flat,
+                )
+                agent_val = float(ppo_stats['policy_loss'])
+                value_val = float(ppo_stats['value_loss'])
+            else:
+                total_loss = torch.stack(value_losses).sum() + torch.stack(agent_losses).sum()
+                total_loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.controller.parameters(), self._grad_clip_norm)
+                optim.step()
+                scheduler.step()
+                agent_val = float(torch.stack(agent_losses).mean().item())
+                value_val = float(torch.stack(value_losses).mean().item())
 
             # Terminal quality — reuse `q_final_parts` from the last reward
             # call to avoid an extra SSIM+LPIPS forward. Reconstruct q_final
@@ -266,9 +336,9 @@ class HumanTrainer(BaseTrainer):
                 q_final_parts = {'ssim': m_T['ssim'], 'lpips': m_T['lpips'], 'quality': m_T['quality']}
             q_delta = (q_final - q_initial).mean().item()
 
-            # loss stats (moving averages) — agent + value tracked separately.
-            agent_val = float(torch.stack(agent_losses).mean().item())
-            value_val = float(torch.stack(value_losses).mean().item())
+            # loss stats (moving averages). `agent_val` / `value_val` are set
+            # above in each branch — PPO uses ppo_stats, Actor-Critic uses the
+            # per-step losses.
             mloss_agent = (mloss_agent * it + agent_val) / (it + 1)
             mloss_value = (mloss_value * it + value_val) / (it + 1)
             mloss_quality_delta = (mloss_quality_delta * it + q_delta) / (it + 1)

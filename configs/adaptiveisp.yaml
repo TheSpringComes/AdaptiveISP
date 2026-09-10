@@ -85,6 +85,23 @@ action_mask:
     enabled: false
     groups: []
 
+# ---------- RL Algorithm (V3-A3 阶段 1) ----------
+# `name: actor_critic` (default) keeps the 1-step TD + ReplayMemory recipe
+# used since V1. `name: ppo` switches to T-step rollout → GAE → K-epoch
+# clipped PPO. See controller/adaptiveisp/ppo.py for hyperparam semantics.
+rl_algo:
+  name: actor_critic
+  ppo:
+    epochs: 4              # K, PPO passes over the rollout
+    clip_range: 0.2        # ε in the clipped surrogate
+    value_coef: 0.5        # weight on the value MSE
+    entropy_coef: 0.01     # weight on the entropy bonus
+    advantage_norm: true   # normalize advantages per minibatch
+    minibatch_size: 64
+    grad_clip_norm: 0.5
+    gae_lambda: 0.95
+    # gamma: <inherits from discount_factor>
+
 # ---------- Logging / checkpointing ----------
 val_freq: 1000                            # (retained; unused after Stage 3 val block removal)
 save_model_freq: 1000

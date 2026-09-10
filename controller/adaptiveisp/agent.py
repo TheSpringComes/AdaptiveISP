@@ -173,5 +173,51 @@ class AdaptiveISPController(Controller):
             pdf=pdf,
         )
 
+    def evaluate(
+        self,
+        state: PipelineState,
+        constraint: ConstraintResult,
+        op_indices: torch.Tensor,
+        is_stop: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Recompute (log_prob, value, entropy) for a FIXED action under the
+        current policy — the PPO update path.
+
+        Same pdf construction as `.act` (exploration mix + extended STOP
+        mask); the only difference is that instead of sampling / argmaxing
+        we `gather` log-prob at the pre-recorded action index. `op_indices`
+        + `is_stop` encode the same categorical choice as the rollout-time
+        sample: `sampled_idx = n_ops if is_stop else op_indices`.
+
+        Params are deterministic (no separate parameter distribution) so
+        this method does NOT re-project params — PPO clips only the
+        categorical op-choice distribution.
+        """
+        obs = self._build_obs(state)
+        sf = self.select_features(obs)
+
+        n_actions = self.n_ops + 1
+        logits = self.select_head(sf)                              # [B, n_ops + 1]
+        pdf = F.softmax(logits, dim=1) + 1e-37
+        pdf = pdf * (1.0 - self.exploration) + self.exploration / n_actions
+
+        stop_col_ok = (state.step > 0).float().unsqueeze(-1)
+        extended_mask = torch.cat(
+            [constraint.op_mask.float(), stop_col_ok], dim=1,
+        )
+        pdf = pdf * extended_mask
+        pdf = pdf / (pdf.sum(dim=1, keepdim=True) + 1e-30)
+        entropy = (-pdf * torch.log(pdf + 1e-10)).sum(dim=1, keepdim=True)
+
+        # Rebuild the sampled action index (op or STOP).
+        sampled_idx = torch.where(
+            is_stop, torch.full_like(op_indices, self.n_ops), op_indices,
+        ).to(torch.int64).unsqueeze(-1)
+        log_prob = torch.log(pdf.gather(1, sampled_idx) + 1e-10).squeeze(-1)
+
+        value = self.value_net(state).reshape(-1)
+        entropy = entropy.reshape(-1)
+        return log_prob, value, entropy
+
 
 __all__ = ["AdaptiveISPController"]
