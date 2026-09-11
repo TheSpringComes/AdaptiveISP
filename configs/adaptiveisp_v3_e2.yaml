@@ -129,7 +129,7 @@ fc1_size: 128
 feature_extractor_dims: 4096
 
 # ---------- Replay memory ----------
-replay_memory_size: 128
+replay_memory_size: 64                     # 128 → 64 for lower RAM footprint
 fresh_raw_ratio: 0.25
 images_per_epoch: 1000
 
