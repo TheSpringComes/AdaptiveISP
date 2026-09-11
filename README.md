@@ -1,10 +1,11 @@
-# AdaptiveISP V2-AI (SDI Refactor)
+# AdaptiveISP V3 (SDI Refactor)
 
-Re-implementation of **AdaptiveISP** (NeurIPS 2024) with V2-AI extensions.
+Re-implementation of **AdaptiveISP** (NeurIPS 2024) with V2-AI and V3 extensions.
 V1 is Wang et al. (2024)'s baseline (10 classical operators, Detection task);
 V2-AI adds 16 new operators (7 Samsung neural + 9 Infinite-ISP Torch-native),
 a learned STOP action, an exponential repeat penalty, a second downstream task
 (FiveK Human Quality), and an automatic post-val canary visualization.
+V3 introduces structured search space constraints and PPO-based training.
 
 > Wang Y., Xu T., Zhang F., Xue T., Gu J.,
 > *AdaptiveISP: Learning an Adaptive Image Signal Processor for Object Detection*,
@@ -57,6 +58,58 @@ per iter (no ReplayMemory).
 **Automatic canary visualization.** `tools/val.py` writes both mAP + PNGs
 in one shot — see [Evaluation](#evaluation) below.
 
+## V3 Extensions
+
+V3 introduces three structural improvements to the search space and training algorithm:
+
+**A1: Canonical Backbone.** A fixed ISP pipeline (AWB → CCM → GTM → Gamma) runs before the Controller, providing a reliable baseline RGB image. This reduces the search space from "RAW → task-optimized RGB" to "baseline RGB → task-optimized RGB", making the RL problem more tractable. Implemented in `pipeline/backbone.py`, controlled by `canonical_backbone.enabled` in config.
+
+**A2: Action Mask.** Dynamic constraints on the Controller's action space:
+- **No-repeat mask**: prevents selecting the same operator twice in a rollout
+- **Order mask**: enforces pipeline ordering (e.g., denoise before sharpen)
+- **Group budget mask**: limits total selections from related operator groups (e.g., at most 2 tonal adjustments)
+
+Implemented in `search/priors/action_mask.py`, controlled by `action_mask` block in config.
+
+**A3: PPO Training.** Replaces REINFORCE with Proximal Policy Optimization (PPO) for more stable training. Uses GAE(λ) advantage estimation, clipped surrogate objective, and value function baseline. Implemented in `controller/adaptiveisp/ppo.py`, controlled by `rl_algo.name: ppo` in config.
+
+### V3 Results
+
+**Human Quality (FiveK + Expert C, 25 epochs):**
+
+| Config | SSIM ↑ | LPIPS ↓ | Q ↑ | Rollout |
+|--------|--------|---------|-----|---------|
+| H0 (V2 baseline) | 0.593 | 0.407 | +0.186 | 1.00/8 |
+| H1 (+backbone) | 0.540 | 0.370 | +0.170 | 1.00/8 |
+| H2 (+mask) | 0.588 | 0.423 | +0.165 | 7.00/8 |
+| H3 (+PPO) | 0.616 | 0.374 | +0.242 | 6.96/8 |
+| **H3-s5-rew** | **0.605** | **0.318** | **+0.287** | 4.00/5 |
+
+H3-s5-rew uses `test_steps=5` with tuned reward shaping (stop_bonus=0.01, early_stop_penalty=2.0), achieving **Q=+0.287** (4.5pt above H3 baseline) with 37.5% less compute.
+
+**Detection (LOD, 25 epochs):** V3 shows negative transfer at this budget (E0=0.686, E1=0.604, E2=0.564, E3=0.597 mAP@0.5). The backbone constrains the Controller's ability to optimize for YOLOv3's specific feature requirements. Longer training (800 epochs) may recover performance.
+
+### V3 Configs and Scripts
+
+```bash
+# Detection ablation ladder (E0→E1→E2→E3)
+bash scripts/run_v3_ablation.sh
+
+# Human ablation ladder (H0→H1→H2→H3)
+bash scripts/run_v3_human_ablation.sh
+
+# H3-s5 variants (test_steps=5, lr/reward tuning)
+bash scripts/run_v3_human_s5_variants.sh
+
+# Generate comparison visualizations
+python tools/v3_summary_viz.py
+```
+
+Configs:
+- `configs/adaptiveisp_v3_e{0,1,2,3}.yaml` — Detection ablation
+- `configs/adaptiveisp_human_v3_e{0,1,2,3}.yaml` — Human ablation
+- `configs/adaptiveisp_human_v3_e3_s5*.yaml` — H3-s5 variants
+
 ## Repository layout
 
 ```
@@ -66,23 +119,31 @@ isp/
 ├─ operators/infinite_isp/      9 Infinite-ISP-derived (Torch-native)
 ├─ learned/samsung_modular/     7 Samsung Modular Neural ISP wrappers
 └─ third_party/modular_neural_isp/    gitignored; 172 MB Samsung code
-controller/adaptiveisp/         Controller + STOP head + Reward + HumanReward
-pipeline/                       PipelineState (op_usage: int64) + Executor
-search/                         SearchSpace + priors
+controller/adaptiveisp/         Controller + STOP head + Reward + HumanReward + PPO
+pipeline/                       PipelineState (op_usage: int64) + Executor + Backbone + TrajectoryBuffer
+search/
+├─ space.py                     SearchSpace (composes priors)
+└─ priors/action_mask.py        NoRepeatMask, OrderMask, GroupBudgetMask
 tasks/
 ├─ detection/                   YOLOv3 wrapper + ReplayMemory + LOD/COCO loaders
 ├─ human_quality/               FiveK dataset + SSIM/LPIPS metrics + Task
 └─ third_party/yolov3/          vendored
 engine/
-├─ trainer.py                   Detection (1-iter-1-step + ReplayMemory)
-├─ trainer_human.py             Human (full T-step rollout per iter)
+├─ trainer.py                   Detection (1-iter-1-step + ReplayMemory, or PPO)
+├─ trainer_human.py             Human (full T-step rollout per iter, or PPO)
 └─ evaluator.py                 mAP + auto-viz
-configs/                        adaptiveisp.yaml (main) + 15 ablation variants
+configs/                        adaptiveisp.yaml (main) + V3 ablation variants
 tools/
 ├─ train.py                     training CLI (`--task {detection,human}`)
 ├─ val.py                       mAP + auto-viz CLI
-└─ visualization/visualizer.py  standalone canary tool
-scripts/                        ablation orchestrators + summarizer
+├─ visualization/visualizer.py  standalone canary tool
+└─ v3_summary_viz.py            V3 ablation comparison figure generator
+scripts/
+├─ run_ablations.sh             V2 ablation orchestrator
+├─ run_v3_ablation.sh           V3 Detection ablation ladder
+├─ run_v3_human_ablation.sh     V3 Human ablation ladder
+├─ run_v3_human_s5_variants.sh  H3-s5 variant sweep
+└─ val_v3_ablation.sh           V3 val runner
 debug/smoke/                    5 smoke tests (imports, ops, pipeline, controller, e2e)
 docs/V1DESIGN.md                V1 architecture doc
 ```
@@ -141,6 +202,38 @@ Same schema plus `'task': 'human_quality'`. `HumanTrainer` runs a
 full-episode rollout per iter (one `.backward()` covering all T steps),
 and the terminal `Q(I_T) − Q(I_0)` is the only non-zero task_delta.
 
+### V3 Training
+
+V3 configs enable the canonical backbone, action masks, and/or PPO:
+
+```bash
+# V3 Human E3 (backbone + mask + PPO)
+CUDA_VISIBLE_DEVICES=0 python tools/train.py --task human \
+    --batch_size 4 --epochs 25 --imgsz 512 \
+    --save_path v3_h3 --cfg configs/adaptiveisp_human_v3_e3.yaml
+
+# V3 Human E3 with test_steps=5 (faster, tuned reward)
+CUDA_VISIBLE_DEVICES=0 python tools/train.py --task human \
+    --batch_size 4 --epochs 25 --imgsz 512 \
+    --save_path v3_h3_s5 --cfg configs/adaptiveisp_human_v3_e3_s5_rew.yaml
+
+# V3 Detection E3 (backbone + mask + PPO)
+CUDA_VISIBLE_DEVICES=0 python tools/train.py --task detection \
+    --data_name lod \
+    --data_cfg tasks/third_party/yolov3/data/lod.yaml \
+    --batch_size 4 --epochs 25 --imgsz 512 \
+    --save_path v3_e3 --cfg configs/adaptiveisp_v3_e3.yaml
+```
+
+Key config knobs:
+- `canonical_backbone.enabled: true` — enable fixed ISP backbone
+- `action_mask.no_repeat.enabled: true` — prevent op reuse
+- `action_mask.order.enabled: true` — enforce pipeline ordering
+- `action_mask.group_budget.enabled: true` — limit group selections
+- `rl_algo.name: ppo` — use PPO instead of REINFORCE
+- `test_steps: 5` — rollout length (default 8)
+- `min_rollout_length: 3` — minimum steps before STOP is allowed
+
 ### What the print block shows
 
 Every `print_freq` iters, both trainers print (windowed since last print):
@@ -161,10 +254,19 @@ Every `print_freq` iters, both trainers print (windowed since last print):
 
 ## Evaluation
 
-`tools/val.py` runs mAP AND writes canary PNGs to
-`<project>/<name>/visualization/` in one shot. Task is auto-detected
-from the ckpt's `task` field.
+`tools/val.py` runs the eval loop AND writes canary PNGs in one shot.
+The eval loop auto-routes on the ckpt's `task` field:
 
+  - `detection` (V1 default) — mAP against LOD/COCO
+  - `human_quality` — SSIM / LPIPS / Q + rollout length + learned-STOP pct
+    against FiveK val
+
+Text artifacts (`val_log.txt` for both branches, plus `records.txt` for
+detection) land under `<project>/<name>/`; the canary PNGs land under the
+checkpoint's own experiment folder (`experiments/<exp>/visualization/`),
+so they sit next to the ckpt and cfg that produced them.
+
+**Detection:**
 ```bash
 CUDA_VISIBLE_DEVICES=0 python tools/val.py \
     --weights pretrained/yolov3.pt \
@@ -180,10 +282,32 @@ Output:
 ```
                  Class     Images  Instances     P     R  mAP50  mAP75  mAP50-95
                    all        100        250 0.712 0.634  0.706  0.412      0.30
-visualization: 4 cases (8 PNGs) → val_results/my_run/visualization/
+visualization: 4 cases (8 PNGs) → experiments/lod-adaptiveisp_lod/visualization/
 ```
 
-Flags: `--skip_viz` (mAP only), `--viz_cases N` (default 4).
+**Human Quality:** (FiveK paths come from the cfg's `human_quality:` block,
+so no `--data`/`--weights`/`--data_name` needed)
+```bash
+CUDA_VISIBLE_DEVICES=0 python tools/val.py \
+    --isp_weights experiments/v2ai_human/ckpt/HumanISP_iter_28000.pth \
+    --cfg_file experiments/v2ai_human/adaptiveisp_human.yaml \
+    --project val_results --name v2ai_human_iter28000 --exist-ok
+```
+
+Output:
+```
+===== VAL (Human Quality) =====
+  samples: 100
+  SSIM:  0.xxxx
+  LPIPS: 0.xxxx
+  Q:     +0.xxxx
+  mean rollout length: X.XX/8
+  pct learned-STOP (before time-limit): XX.X%
+===============================
+visualization: 4 cases (8 PNGs) → experiments/v2ai_human/visualization/
+```
+
+Flags (both branches): `--skip_viz` (numbers only), `--viz_cases N` (default 4).
 
 **Standalone visualizer** — for a ckpt you don't want to re-eval:
 ```bash
