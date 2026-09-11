@@ -1,0 +1,119 @@
+# V3 Human E3 (PPO) with test_steps=5, stop_bonus=0.01, early_stop_penalty=2.0
+# Same as adaptiveisp_human_v3_e3.yaml except test_steps=5
+
+operators:
+  - exposure
+  - gamma
+  - ccm
+  - sharpen
+  - denoise
+  - tone
+  - contrast
+  - saturation
+  - wnb
+  - whitebalance
+  - n_awb
+  - n_gain
+  - n_gtm
+  - n_chroma
+  - n_gamma
+
+filters_runtime: [1.7, 2.0, 1.9, 6.3, 10.0, 2.7, 2.1, 2.0, 1.9, 1.7,
+                  8.0, 3.0, 4.0, 0.4, 0.3]
+filter_runtime_penalty: false
+filter_runtime_penalty_lambda: 0.01
+
+canonical_backbone:
+  enabled: true
+
+action_mask:
+  no_repeat:
+    enabled: true
+  order:
+    enabled: true
+    rules:
+      - after:  [sharpen]
+        before: [denoise]
+  group_budget:
+    enabled: true
+    groups:
+      - name: awb
+        ops: [whitebalance, wnb, n_awb]
+        max_select: 1
+      - name: denoise
+        ops: [denoise]
+        max_select: 1
+      - name: sharpen
+        ops: [sharpen]
+        max_select: 1
+      - name: tonal
+        ops: [exposure, gamma, tone, contrast, n_gamma, n_gtm]
+        max_select: 2
+
+rl_algo:
+  name: ppo
+  ppo:
+    epochs: 4
+    clip_range: 0.2
+    value_coef: 0.5
+    entropy_coef: 0.01
+    advantage_norm: true
+    minibatch_size: 64
+    grad_clip_norm: 0.5
+    gae_lambda: 0.95
+    gamma: 0.95
+
+human_quality:
+  fivek_root:  /home/jing/datasets/fivek
+  cache_dir:   /home/jing/datasets/fivek/cache_expert_c
+  train_list:  /home/jing/datasets/fivek/train_expert_c.txt
+  val_list:    /home/jing/datasets/fivek/val_expert_c.txt
+  lambda_ssim:  1.0
+  lambda_lpips: 1.0
+  lpips_net:    alex
+
+val_freq: 1000
+save_model_freq: 1000
+print_freq: 100
+summary_freq: 100
+show_img_num: 2
+
+parameter_lr_mul: 1
+value_lr_mul: 1
+critic_lr_mul: 1
+critic_logit_multiplier: 10
+discount_factor: 1.0
+filter_usage_penalty: 5.0
+use_TD: true
+maximum_trajectory_length: 10
+all_reward: 1.0
+exploration: 0.2
+exploration_penalty: 0.05
+early_stop_penalty: 2.0
+detect_loss_weight: 1.0
+use_penalty: true
+test_steps: 5
+grad_clip_norm: 1.0e-05
+
+stop_bonus_scale: 0.01
+
+base_channels: 32
+dropout_keep_prob: 0.5
+fc1_size: 128
+feature_extractor_dims: 4096
+obs_hw: 128
+
+images_per_epoch: 500
+
+z_type: uniform
+z_dim_per_filter: 16
+
+train:
+  batch_size: 4
+  epochs: 60
+  lr: 3.0e-05
+  imgsz: 512
+  lr_decay: 0.1
+  lr_segments: 3
+
+min_rollout_length: 3
