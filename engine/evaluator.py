@@ -337,7 +337,9 @@ def _evaluate_human(
         FiveKDataset, HumanQualityTask, collate_fivek,
         psnr_batch, delta_e_batch,
     )
-    from front_isp.calibration import CalibratedFrontISP
+    # V3.1: Front ISP state in ckpt is loaded via generic
+    # `len(state_dict()) > 0` below (learnable mode has params; identity/
+    # fixed do not), so no CalibratedFrontISP import is needed here.
 
     hq_cfg = cfg.get('human_quality', {}) or {}
     fivek_root = hq_cfg.get('fivek_root', '/home/jing/datasets/fivek')
@@ -372,8 +374,9 @@ def _evaluate_human(
     _am = build_action_mask(cfg.get('action_mask', {}) or {}, cfg.operators)
     search_space = SearchSpace(ops, cfg.operators, priors=[_am] if _am.priors else None)
     front_isp = build_front_isp_from_cfg(cfg).to(device)
-    # V3.1: prefer the calibration state bundled in the ckpt over cfg-init.
-    if isinstance(front_isp, CalibratedFrontISP) and ckpt_dict.get('front_isp'):
+    # V3.1: prefer the Front ISP state bundled in the ckpt over cfg-init
+    # (learnable mode; identity/fixed have nothing to load).
+    if ckpt_dict.get('front_isp') and len(front_isp.state_dict()) > 0:
         front_isp.load_state_dict(ckpt_dict['front_isp'])
 
     T = int(cfg.test_steps)

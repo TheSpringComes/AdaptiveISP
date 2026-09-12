@@ -10,6 +10,15 @@ from .base import FrontISPBase
 # 全局注册表
 _FRONT_ISP_REGISTRY: Dict[str, Type[FrontISPBase]] = {}
 
+# 各类型在主配置里的子键候选（按优先级）。V3.1 统一四种模式：
+#     identity | fixed | learnable | external
+# legacy 名称（none / calibrated / canonical / infinite_isp /
+# modular_neural_isp）保留为别名，旧配置继续可用。
+_SUBKEY_CANDIDATES: Dict[str, list] = {
+    'learnable': ['learnable', 'calibration'],
+    'calibrated': ['calibration', 'calibrated', 'learnable'],
+}
+
 
 def register_front_isp(name: str):
     """注册 Front ISP 实现的装饰器
@@ -60,18 +69,21 @@ def build_front_isp(config: Dict[str, Any]) -> FrontISPBase:
         available = list(_FRONT_ISP_REGISTRY.keys())
         raise ValueError(
             f"未知的 Front ISP 类型: '{front_type}'。"
-            f"可用类型: {available}"
+            f"V3.1 统一四种模式: identity | fixed | learnable | external。"
+            f"已注册类型: {available}"
         )
 
     cls = _FRONT_ISP_REGISTRY[front_type]
-    # 传递对应类型的子配置。calibrated 的子键在 config 里叫 'calibration'
-    # （见 V3.1 方案 §6），两个键名都接受。
-    if front_type == 'calibrated':
-        sub_config = (config.get('calibration', None)
-                      if config.get('calibration', None) is not None
-                      else config.get('calibrated', {})) or {}
-    else:
-        sub_config = config.get(front_type, {}) or {}
+    # 传递对应类型的子配置。每个类型的主子键与其类型同名
+    # （fixed / learnable / external）；learnable 的旧名 'calibration'
+    # 与旧类型名 'calibrated' 的子键均保留兼容。
+    sub_config = None
+    for key in _SUBKEY_CANDIDATES.get(front_type, [front_type]):
+        if config.get(key) is not None:
+            sub_config = config.get(key)
+            break
+    if sub_config is None:
+        sub_config = {}
     return cls(config=sub_config)
 
 

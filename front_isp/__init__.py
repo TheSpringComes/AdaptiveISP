@@ -1,28 +1,35 @@
-"""front_isp: Configurable Front ISP（可插拔前置 ISP）。
+"""front_isp: 可插拔前置 ISP（V3.1 重构，四种统一模式）。
 
-整体 Pipeline（见 Pipeline 扩展方案）：
+整体 Pipeline（见 V3.1 规划）：
 
     RAW → front_isp.process(raw, metadata) → Baseline RGB
         → AdaptiveISP (Adaptive Tail) → Final RGB → Task
 
-Front ISP 只负责产生稳定、正常的基础成像结果；Adaptive Tail 只负责
-根据场景和任务做增量式优化（pipeline-level refinement，而非显式的
-I_out = I_base + ΔI）。
+Front ISP 只负责产生稳定、正常的基础成像结果（WB / CCM / Gamma 这类
+基础处理不必交给 RL 逐步搜索）；AdaptiveISP 保持原有逻辑，只负责 Front
+ISP 之后的算子选择与参数优化。
 
-对外只暴露一个入口：
+统一四种模式（`front_isp.type`）：
+
+    identity  — 不使用 Front ISP，输入直接进入 AdaptiveISP（对照组）。
+    fixed     — 人工配置 ISP：WB/CCM/Bias/Gamma 等简单模块，顺序与参数
+                全部由配置指定，训练时不更新。模块注册表开放扩展
+                （加 denoise/sharpen/contrast = 注册一个函数即可）。
+    learnable — 固定结构 + 部分参数可训练（WB gain / CCM / Bias / Gamma）。
+                两阶段训练：Stage 1 只训 Front ISP（CalibrationTrainer，
+                FiveK Input → Expert C），保存并冻结；Stage 2 运行
+                AdaptiveISP 训练（HumanTrainer），Front ISP 输出作为 RL
+                初始图像。不与 AdaptiveISP 联合训练。
+    external  — 接入现有开源 ISP（backend: infinite_isp | samsung_isp），
+                wrapper 统一输入输出，AdaptiveISP 不感知具体实现。
+
+legacy 别名（继续可用）：none=identity、calibrated=learnable、
+canonical（V3-A1 固定链）、infinite_isp / modular_neural_isp（直连 wrapper）。
+
+对外入口不变：
 
     front_isp = build_front_isp_from_cfg(cfg)      # cfg 是整个运行配置
     baseline_rgb = front_isp(raw, metadata)       # 或 .process(raw, metadata)
-
-主 Pipeline（trainer / evaluator / visualizer）不 import 任何具体
-Infinite-ISP / Samsung 实现，第三方项目通过 wrapper 接入且不修改。
-
-注册的实现：
-    none               — IdentityFrontISP（passthrough，E0 parity）
-    canonical          — CanonicalBackbone（V3-A1 固定 4 阶段 ISP）
-    calibrated         — CalibratedFrontISP（V3.1 可学习相机标定：WB/CCM/Bias/Tone）
-    infinite_isp       — InfiniteISPFront（10x-Engineers Infinite-ISP wrapper）
-    modular_neural_isp — ModularNeuralISPFront（SamsungLabs wrapper）
 """
 from front_isp.base import FrontISPBase
 from front_isp.registry import (
@@ -34,9 +41,11 @@ from front_isp.registry import (
 # 顶层 import 触发注册。所有子模块的 import 都是安全的（第三方依赖
 # 延迟到实例构建时才加载），因此这里不会因为缺少第三方仓库而失败。
 from front_isp.identity import IdentityFrontISP                    # noqa: F401
+from front_isp.fixed import FixedFrontISP                         # noqa: F401
 from front_isp.canonical import CanonicalBackbone                 # noqa: F401
 from front_isp.calibration import CalibratedFrontISP               # noqa: F401
-from front_isp.infinite_isp import InfiniteISPFront                # noqa: F401
+from front_isp.external import ExternalFrontISP                   # noqa: F401
+from front_isp.infinite_isp import InfiniteISPFront               # noqa: F401
 from front_isp.modular_neural_isp import ModularNeuralISPFront     # noqa: F401
 
 
@@ -68,8 +77,10 @@ def build_front_isp_from_cfg(cfg) -> FrontISPBase:
 __all__ = [
     "FrontISPBase",
     "IdentityFrontISP",
+    "FixedFrontISP",
     "CanonicalBackbone",
     "CalibratedFrontISP",
+    "ExternalFrontISP",
     "InfiniteISPFront",
     "ModularNeuralISPFront",
     "build_front_isp",

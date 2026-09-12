@@ -28,15 +28,14 @@ filters_runtime: [1.7, 2.0, 1.9, 6.3, 10.0, 2.7, 2.1, 2.0, 1.9, 1.7,
 filter_runtime_penalty: false
 filter_runtime_penalty_lambda: 0.01
 
-# ---------- Front ISP (可插拔前置 ISP) ----------
+# ---------- Front ISP (可插拔前置 ISP, V3.1 四种统一模式) ----------
 # RAW → Front ISP → Baseline RGB → AdaptiveISP(Adaptive Tail) → Task。
+#   type: identity | fixed | learnable | external
 # See configs/adaptiveisp.yaml for full description.
-#   type: none | canonical | infinite_isp | modular_neural_isp
 # Default off = V2 parity (E0 baseline).
 front_isp:
   enabled: false
-  type: none
-  canonical: {}
+  type: identity
 
 # Legacy V3-A1 key（向后兼容）：`front_isp:` 段缺席时回落到这里。
 canonical_backbone:

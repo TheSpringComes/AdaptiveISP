@@ -74,15 +74,16 @@ class CalibrationTrainer(BaseTrainer):
             collate_fn=collate_fivek,
         )
 
-        # --- Front ISP (must be calibrated) ---
+        # --- Front ISP (must be learnable / legacy 'calibrated') ---
         # 注入 n_cameras：camera_specific 时按数据侧实际相机数建表。
         fi_cfg = cfg.get('front_isp', {}) or {}
-        if fi_cfg.get('type') != 'calibrated':
+        if fi_cfg.get('type') not in ('learnable', 'calibrated'):
             raise SystemExit(
-                "CalibrationTrainer 需要 front_isp.type == calibrated，"
+                "CalibrationTrainer 需要 front_isp.type == learnable，"
                 f"得到 {fi_cfg.get('type', 'none')!r}。请使用 V3.1 预训练 config。"
             )
-        calib_cfg = fi_cfg.get('calibration', {}) or {}
+        calib_cfg = ((fi_cfg.get('learnable', {}) or {})
+                     or (fi_cfg.get('calibration', {}) or {}))
         if calib_cfg.get('camera_specific', False):
             calib_cfg['n_cameras'] = max(self.train_dataset.n_cameras,
                                          self.val_dataset.n_cameras)
@@ -202,7 +203,7 @@ class CalibrationTrainer(BaseTrainer):
                 except Exception:
                     print("write log error!")
 
-            if it % self.cfg.save_model_freq == 0:
+            if it % self.cfg.save_model_freq == 0 or it == max_iter_step:
                 self._save_ckpt(it, optim,
                                 extra={'task': 'calibration_pretrain'})
 

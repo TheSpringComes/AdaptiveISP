@@ -1,18 +1,16 @@
-# V3.1-C — Joint Fine-tuning（Stage 3）：Calibration + AdaptiveISP 联合训练。
+# V3.1 消融 — fixed Front ISP（人工配置 ISP，V3.1 模式之二）。
 #
-#     Calibration（小 lr，lr×lr_calib_mul）
-#         ↓
-#     AdaptiveISP（Controller + RL，V3 不变）
-#         ↓
-#     Expert C / Task Loss
+#     RAW → Front ISP(人工链，参数固定) → Baseline RGB → AdaptiveISP → ...
 #
-# 用法（先完成 Stage 1 / 2）：
+# 用法：
 #   python tools/train.py --task human \
-#       --cfg configs/adaptiveisp_human_v31_joint.yaml \
-#       --save_path v31_c_joint --resume <stage2 最新 ckpt 可选>
+#       --cfg configs/adaptiveisp_human_v31_fixed.yaml \
+#       --save_path v31_fixed
 #
-# Stage 2（V3.1-B，Frozen Calibration）= 同一 config 把
-# `training.stage` 改回 `adaptive_train`，或直接用本文件减去 joint 段。
+# 默认链：gray-world AWB → gamma 1/2.2。全部参数手工设定，训练中不更新。
+# 可用模块见 front_isp/fixed.py::list_fixed_modules()：
+#   wb(grayworld 或固定 gains) / ccm(含 'cam2rgb' 快捷方式) / bias /
+#   gamma / exposure / smoothstep —— 新增模块 = 注册一个函数即可。
 
 # ---------- Operators（与 H-BASE 相同）----------
 operators:
@@ -32,29 +30,17 @@ operators:
   - n_chroma
   - n_gamma
 
-# ---------- Front ISP: Calibrated (V3.1) ----------
+# ---------- Front ISP: fixed（V3.1 模式之二） ----------
 front_isp:
   enabled: true
-  type: calibrated
-  calibration:
-    camera_specific: true
-    n_cameras: 24              # 训练侧按数据自动覆盖
-    demosaic:
-      type: bayer_avg
-      learnable: false
-    white_balance: {learnable: true}
-    ccm:          {learnable: true}
-    bias:         {learnable: true}
-    tone:         {learnable: true}
-    init:
-      type: identity
-    # Stage 1 预训练结果（CalibISP ckpt），构建时加载：
-    ckpt: experiments/v31_stage1/ckpt/CalibISP_iter_2500.pth
-
-# ---------- 训练阶段 ----------
-training:
-  stage: joint_finetune       # adaptive_train | joint_finetune
-  lr_calib_mul: 0.01          # lr_calib = lr × 0.01 ≪ lr_adaptive
+  type: fixed
+  fixed:
+    modules:
+      - {name: wb, auto: grayworld}
+      # 可选示例（取消注释即生效）：
+      # - {name: exposure, ev: -0.3}
+      # - {name: ccm, matrix: cam2rgb, bias: [0, 0, 0]}
+      - {name: gamma, gamma: 0.4545}     # 1/2.2 编码 gamma
 
 # ---------- 其余与 H-BASE 相同 ----------
 action_mask:

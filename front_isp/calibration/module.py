@@ -32,6 +32,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+import os
+
 import torch
 
 from front_isp.base import FrontISPBase
@@ -40,15 +42,22 @@ from front_isp.calibration.color_mapping import apply_calibration
 from front_isp.registry import register_front_isp
 
 
+@register_front_isp('learnable')
 @register_front_isp('calibrated')
 class CalibratedFrontISP(FrontISPBase):
-    """可学习相机标定 Front ISP。"""
+    """可学习相机标定 Front ISP（V3.1 模式之三，`type: learnable`）。
+
+    旧名 `type: calibrated` 仍可用（同一实现，等价别名）。
+    """
 
     def __init__(self, config: Optional[Dict[str, Any]] = None) -> None:
         super().__init__(config)
-        # config 既可为 {'calibration': {...}}（YAML 主配置的子键），
-        # 也可直接是 calibration 体（registry 以 'calibrated' 子键传入时）。
-        calib = self.config.get('calibration', None)
+        # config 既可为 {'learnable': {...}} / {'calibration': {...}}
+        # （YAML 主配置的子键，两个名字等价），也可直接是参数体
+        # （registry 以子键传入时）。
+        calib = self.config.get('learnable', None)
+        if calib is None:
+            calib = self.config.get('calibration', None)
         if calib is None:
             calib = dict(self.config)
 
@@ -84,7 +93,15 @@ class CalibratedFrontISP(FrontISPBase):
         # Stage 1 预训练结果加载（CalibrationTrainer 的 ckpt 含
         # 'front_isp' state_dict）。init.params (JSON) 与 init.ckpt (pth)
         # 二选一；ckpt 优先级更低，作为 V3.1-B 的标准入口。
+        # ckpt 文件不存在时给出可操作的警告并继续用 init（Stage-1 尚未
+        # 跑过是常见状态，不应让配置构建直接崩溃）。
         ckpt_path = calib.get('ckpt', None)
+        if ckpt_path and not os.path.isfile(ckpt_path):
+            import warnings
+            warnings.warn(
+                f"front_isp learnable ckpt 不存在: {ckpt_path} "
+                f"（Stage 1 未训练？继续使用 init={init.get('type', 'identity')} 初始化）")
+            ckpt_path = None
         if ckpt_path:
             state = torch.load(ckpt_path, map_location='cpu', weights_only=False)
             state = state.get('front_isp', state)

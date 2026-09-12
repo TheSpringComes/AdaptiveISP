@@ -44,6 +44,9 @@ def _add_shared_args(p: argparse.ArgumentParser) -> None:
                    help="save path at experiments/save_path/")
     p.add_argument("--cfg", type=str, default="configs/adaptiveisp.yaml",
                    help="config yaml")
+    p.add_argument("--max_iters", type=int, default=0,
+                   help="cap training iterations (small-scale / smoke runs); "
+                        "0 = use config-derived value")
     p.add_argument("--resume", type=str, default=None)
     p.add_argument("--runtime_penalty", action="store_true", default=False)
     p.add_argument("--runtime_penalty_lambda", type=float, default=0.01)

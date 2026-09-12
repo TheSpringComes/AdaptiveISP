@@ -110,21 +110,28 @@ Configs:
 - `configs/adaptiveisp_human_v3_e{0,1,2,3}.yaml` — Human ablation
 - `configs/adaptiveisp_human_v3_e3_s5*.yaml` — H3-s5 variants
 
-## V3.1 Camera Calibration
+## V3.1 Front ISP（四种统一模式）
 
-V3.1 adds a **learnable camera calibration** stage inside the pluggable Front ISP framework (`front_isp/`), so the pipeline becomes:
+V3.1 重新整理 Front ISP：放在 AdaptiveISP 之前先做一次基础 ISP 处理，再把结果交给 RL Controller。WB / CCM / Gamma 这类基础处理不必让 RL 一步步搜索，可以提前用固定参数、训练参数或现有 ISP 完成；AdaptiveISP 保持原有逻辑，只负责 Front ISP 之后的算子选择与参数优化。
 
 ```
 RAW → Input Adapter (Dataset layer: Bayer reconstruction per per-file CFA pattern
       → demosaic 0.5*Malvar + 0.5*Bilinear → canonical linear RGB)
-    → Front ISP (CalibratedISP: WB → CCM+Bias → Base Tone) → Base RGB
+    → Front ISP (identity | fixed | learnable | external) → Baseline RGB
     → AdaptiveISP (Adaptive Tail, unchanged) → Task output
 ```
 
-Key pieces:
-- **`front_isp/calibration/`** — differentiable WB / 3×3 CCM / bias / gamma (`color_mapping.py`), a camera-ID → parameter table (`camera_params.py`; FiveK has ~35 cameras via `camera.json`), FittedISP-JSON init (`fittedisp_loader.py`), and the `calibrated` Front ISP type (`module.py`).
-- **Three-stage training**: Stage 1 `calibration_pretrain` (`tools/train.py --task calibration`, loss = λ₁L1 + λ_s(1−SSIM) + λ_pLPIPS vs Expert C), Stage 2 `adaptive_train` (calibration frozen), Stage 3 `joint_finetune` (calibration updated at `lr × lr_calib_mul`).
-- **Ablation ladder** (`scripts/run_v31_ablation.sh`): V3 baseline vs V3.1-A (calibration only) vs V3.1-B (frozen) vs V3.1-C (joint), measured with PSNR / SSIM / LPIPS / ΔE76.
+统一四种模式（`front_isp.type`）：
+
+| type | 说明 | 实现位置 |
+|---|---|---|
+| `identity` | 不使用 Front ISP（对照组，旧名 `none`） | `front_isp/identity.py` |
+| `fixed` | 人工配置 ISP：WB / CCM / Bias / Gamma / Exposure / Smoothstep 等模块，顺序与参数全部由 `fixed.modules` 配置指定，训练不更新；模块注册表开放扩展 | `front_isp/fixed.py` |
+| `learnable` | 固定结构 + 可训练参数（WB gain / CCM / Bias / Gamma，camera-specific 参数表，旧名 `calibrated`）。**两阶段训练**：Stage 1 只训 Front ISP 并冻结；Stage 2 跑 AdaptiveISP。不联合训练 | `front_isp/calibration/` |
+| `external` | 接入现有开源 ISP：`backend: infinite_isp \| samsung_isp`，wrapper 统一输入输出 | `front_isp/external.py` + wrappers |
+
+- **两阶段训练（learnable）**：Stage 1 `tools/train.py --task calibration`（loss = λ₁L1 + λ_s(1−SSIM) + λ_pLPIPS vs Expert C），保存 ckpt 并冻结；Stage 2 `--task human` 加载冻结的 Front ISP 跑 AdaptiveISP。不做联合训练，避免两部分同时变化后难以归因。
+- **消融四路对比**：不用（`adaptiveisp_human.yaml` baseline）/ 人工固定（`v31_fixed.yaml`）/ 学习参数（`v31_stage2.yaml`）/ 开源 ISP（`v31_external.yaml`）。看两个问题：Front ISP 有没有帮助；基础色彩问题前置解决后 RL 是否更容易训练。
 
 ```bash
 # One-time: camera metadata for FiveK (camera ID per sample)
@@ -132,11 +139,20 @@ python tools/fivek_camera_metadata.py \
     --raw-root /home/jing/datasets/fivek/fivek_dataset/raw_photos \
     --out      /home/jing/datasets/fivek/camera.json
 
-# Full V3.1 ablation ladder (Stage1 → B → C)
-bash scripts/run_v31_ablation.sh
+# Stage 1: learnable Front ISP pretrain (freeze after)
+python tools/train.py --task calibration \
+    --cfg configs/adaptiveisp_human_v31_pretrain.yaml \
+    --save_path v31_stage1 --epochs 5 --batch_size 8
+
+# Stage 2: AdaptiveISP with frozen learnable Front ISP
+python tools/train.py --task human \
+    --cfg configs/adaptiveisp_human_v31_stage2.yaml \
+    --save_path v31_stage2
+
+# 小规模验证：任意训练加 --max_iters N 截断迭代数
 ```
 
-Configs: `configs/adaptiveisp_human_v31_pretrain.yaml` (Stage 1), `configs/adaptiveisp_human_v31_joint.yaml` (Stages 2/3 — switch `training.stage`). Deliberately out of scope (future versions): image-adaptive CCM, neural calibration networks, RL-searched calibration, local tone mapping.
+Configs: `v31_pretrain.yaml`（Stage 1）、`v31_stage2.yaml`（Stage 2，冻结加载 Stage-1 ckpt）、`v31_fixed.yaml`（fixed）、`v31_external.yaml`（external）。Legacy 类型名（none / calibrated / canonical / infinite_isp / modular_neural_isp）全部保留为别名。Deliberately out of scope（future versions）：image-adaptive CCM、neural calibration networks、RL-searched calibration、local tone mapping。
 
 ## Repository layout
 
@@ -282,7 +298,7 @@ CUDA_VISIBLE_DEVICES=0 python tools/train.py --task detection \
 ```
 
 Key config knobs:
-- `canonical_backbone.enabled: true` — enable fixed ISP backbone
+- `front_isp.type: identity | fixed | learnable | external` — V3.1 统一 Front ISP 模式（legacy `canonical_backbone.enabled` 仍可用）
 - `action_mask.no_repeat.enabled: true` — prevent op reuse
 - `action_mask.order.enabled: true` — enforce pipeline ordering
 - `action_mask.group_budget.enabled: true` — limit group selections

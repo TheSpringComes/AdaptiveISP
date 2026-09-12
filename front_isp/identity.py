@@ -1,7 +1,8 @@
-"""Identity Front ISP — passthrough.
+"""Identity Front ISP — passthrough（V3.1 模式之一）。
 
-对应 `front_isp: {enabled: false}` 或 `{type: none}`：不做任何前置处理，
-Adaptive Tail 直接从数据集输出的图像开始（V2 / E0 parity 行为）。
+对应 `front_isp: {type: identity}`（或旧写法 `{enabled: false}` /
+`{type: none}`）：不做任何前置处理，Adaptive Tail 直接从数据集输出
+的图像开始（V2 / E0 parity 行为，最基础的对照组）。
 """
 import torch
 
@@ -9,6 +10,7 @@ from front_isp.base import FrontISPBase
 from front_isp.registry import register_front_isp
 
 
+@register_front_isp('identity')
 @register_front_isp('none')
 class IdentityFrontISP(FrontISPBase):
     """Passthrough：process() 原样返回输入。"""

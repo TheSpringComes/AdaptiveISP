@@ -31,7 +31,6 @@ from torch.utils.data import DataLoader
 
 from controller.adaptiveisp.human_reward import HumanReward
 from engine.base_trainer import BaseTrainer
-from front_isp.calibration import CalibratedFrontISP
 from tasks.human_quality import FiveKDataset, HumanQualityTask, collate_fivek
 
 
@@ -91,29 +90,24 @@ class HumanTrainer(BaseTrainer):
 
         # Pipeline subsystems shared with detection Trainer (Controller,
         # Executor, SearchSpace) — task-agnostic construction lives in
-        # BaseTrainer. Before building, give a camera-specific Calibrated
+        # BaseTrainer. Before building, give a camera-specific learnable
         # Front ISP the dataset's camera count so its parameter table is
         # sized correctly.
         fi_cfg = cfg.get('front_isp', {}) or {}
-        calib_cfg = (fi_cfg.get('calibration', {}) or {}) if fi_cfg else {}
-        if fi_cfg.get('type') == 'calibrated' and calib_cfg.get('camera_specific'):
+        calib_cfg = ((fi_cfg.get('learnable', {}) or {})
+                     or (fi_cfg.get('calibration', {}) or {}))
+        if fi_cfg.get('type') in ('learnable', 'calibrated') and \
+                calib_cfg.get('camera_specific'):
             calib_cfg['n_cameras'] = max(self.train_dataset.n_cameras,
                                          self.val_dataset.n_cameras)
         self._build_pipeline_subsystems(cfg, self.device)
 
-        # V3.1 training stage: calibration_pretrain (→ CalibrationTrainer),
-        # adaptive_train (default — calibration frozen), joint_finetune
-        # (calibration parameters join the optimizer at lr×lr_calib_mul).
-        self.training_stage = str(
-            (cfg.get('training', {}) or {}).get('stage', 'adaptive_train'))
-        if isinstance(self.front_isp, CalibratedFrontISP):
-            if self.training_stage == 'joint_finetune':
-                n_calib = len(self.front_isp.trainable_parameters())
-                print(f"joint_finetune: calibration stays learnable "
-                      f"({n_calib} tensors)")
-            else:
-                self.front_isp.freeze()   # Stage 2: Frozen Calibration
-                print(f"stage={self.training_stage}: calibration frozen")
+        # V3.1 两阶段训练：本 trainer 即 Stage 2 —— Front ISP（无论何种
+        # 模式）恒为冻结，只做前向；可学习参数只在 Stage 1
+        # （CalibrationTrainer）训练，不与 AdaptiveISP 联合训练。
+        self.front_isp.eval()
+        for p in self.front_isp.parameters():
+            p.requires_grad_(False)
 
         self.reward_fn = HumanReward(
             n_ops=len(cfg.operators),
@@ -215,14 +209,10 @@ class HumanTrainer(BaseTrainer):
             # Controller sees the image — identity when disabled (E0 parity).
             # `m0` is computed on the post-front_isp image so the reward
             # Q(final) - Q(initial) measures the Controller's (Adaptive Tail)
-            # contribution alone. V3.1 joint_finetune keeps the graph open so
-            # calibration parameters receive gradients from the task loss.
-            if self.training_stage == 'joint_finetune' and \
-                    isinstance(self.front_isp, CalibratedFrontISP):
+            # contribution alone. V3.1: Front ISP 恒冻结（两阶段训练，不
+            # 联合），前向在 no_grad 下执行。
+            with torch.no_grad():
                 imgs = self.front_isp(imgs, {'camera_id': cam_ids}).clamp(0.0, 1.0)
-            else:
-                with torch.no_grad():
-                    imgs = self.front_isp(imgs, {'camera_id': cam_ids}).clamp(0.0, 1.0)
 
             optim.zero_grad()
 
@@ -483,9 +473,10 @@ class HumanTrainer(BaseTrainer):
                 print("output is nan or inf")
 
             if it % self.cfg.save_model_freq == 0:
-                extra = {'task': 'human_quality',
-                         'training_stage': self.training_stage}
-                if isinstance(self.front_isp, CalibratedFrontISP):
+                extra = {'task': 'human_quality'}
+                # Front ISP 有可保存状态时（learnable 模式）一并存入，
+                # 便于 resume / evaluator 复用 Stage-1 冻结参数。
+                if len(self.front_isp.state_dict()) > 0:
                     extra['front_isp'] = self.front_isp.state_dict()
                 self._save_ckpt(it, optim, extra=extra)
 

@@ -1,8 +1,8 @@
-# V3.1 Stage 1 — Calibration 预训练（CalibrationTrainer）。
+# V3.1 Stage 1 — learnable Front ISP 预训练（CalibrationTrainer）。
 #
-# 关闭 AdaptiveISP，只训练 Front ISP 的标定参数：
-#     RAW → Calibration(WB, CCM, Bias, Tone) → Base RGB
-#                                         ↘ L_calib vs Expert C
+# 关闭 AdaptiveISP，只训练 Front ISP 的可学习参数：
+#     RAW → Front ISP(WB, CCM, Bias, Tone) → Base RGB
+#                                      ↘ L_calib vs Expert C
 # 损失：L_calib = λ1·L1 + λs·(1-SSIM) + λp·LPIPS
 #
 # 用法：
@@ -11,22 +11,23 @@
 #       --save_path v31_stage1 --epochs 5 --batch_size 8
 #
 # 产出：experiments/v31_stage1/ckpt/CalibISP_iter_*.pth
-#（含 front_isp 标定 state + camera_names）。
+#（含 front_isp 标定 state + camera_names），供 Stage 2 加载后冻结。
+#
+# 小规模验证：加 --max_iters 40（配合 save_model_freq: 20）。
 
 operators:   # CalibrationTrainer 不用算子，但 load_config 需要
   - exposure
   - gamma
 
-# ---------- Front ISP: Calibrated (V3.1) ----------
+# ---------- Front ISP: learnable（V3.1 模式之三） ----------
+# demosaic 已在 Input Adapter 层完成（front_isp/raw_adapter.py：
+# Bayer 重建 → 0.5*Malvar + 0.5*Bilinear），这里不做 mosaic 处理。
 front_isp:
   enabled: true
-  type: calibrated
-  calibration:
-    camera_specific: true      # FiveK 24 台相机 → 24 套 θ_c
+  type: learnable
+  learnable:
+    camera_specific: true      # FiveK 24 台相机 → 24 套 {WB, CCM, Bias, Gamma}
     n_cameras: 24              # 训练侧会按数据自动覆盖
-    demosaic:
-      type: bayer_avg          # 暂固定（数据层已完成 Bayer 平均）
-      learnable: false
     white_balance: {learnable: true}
     ccm:          {learnable: true}
     bias:         {learnable: true}
@@ -35,9 +36,8 @@ front_isp:
       type: identity           # identity | fittedisp | camera_specific
       # params: params.json    # fittedisp 初始化时的参数文件
 
-# ---------- 训练阶段（V3.1 §4）----------
+# ---------- Stage 1 损失权重 ----------
 training:
-  stage: calibration_pretrain
   lambda_l1:    1.0
   lambda_ssim:  1.0
   lambda_lpips: 1.0
@@ -54,19 +54,7 @@ human_quality:
 
 # ---------- Logging / checkpointing ----------
 val_freq: 1000
-save_model_freq: 100
+save_model_freq: 2500       # 与 epochs×iters 对齐；Stage 2 从这里取 ckpt
 print_freq: 50
 summary_freq: 100
 show_img_num: 2
-
-# 占位（CalibrationTrainer 不构建 Controller，但 _finalize 需要）
-test_steps: 8
-images_per_epoch: 500
-
-train:
-  batch_size: 8
-  epochs: 5
-  lr: 3.0e-03
-  imgsz: 512
-  lr_decay: 0.1
-  lr_segments: 3

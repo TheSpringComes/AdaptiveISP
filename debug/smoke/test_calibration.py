@@ -30,11 +30,23 @@ def test_calibration() -> None:
     from front_isp.calibration.fittedisp_loader import load_fittedisp_params
 
     assert 'calibrated' in fi.list_front_isps()
+    assert 'learnable' in fi.list_front_isps()   # V3.1 统一模式名
 
     # --- build via config (shared params) ---
     m = fi.build_front_isp({'type': 'calibrated'})
     assert isinstance(m, CalibratedFrontISP)
     assert m.table.n_cameras == 1
+
+    # --- V3.1 统一模式名 learnable 等价（子键也用新名） ---
+    m2 = fi.build_front_isp({'type': 'learnable', 'learnable': {
+        'camera_specific': True, 'n_cameras': 2}})
+    assert isinstance(m2, CalibratedFrontISP) and m2.table.n_cameras == 2
+    with torch.no_grad():
+        m2.table.wb_log += 0.1
+    # 新旧子键混用也可（learnable 子键 + 旧 type 名）
+    m3 = fi.build_front_isp({'type': 'calibrated', 'learnable': {
+        'camera_specific': True, 'n_cameras': 2}})
+    assert isinstance(m3, CalibratedFrontISP) and m3.table.n_cameras == 2
 
     x = torch.rand(2, 3, 16, 24)
     y = m(x)  # no metadata → row 0

@@ -122,6 +122,10 @@ class BaseTrainer:
         """Populate derived fields both trainers set after data init."""
         images_per_epoch = int(cfg.get('images_per_epoch', 1000))
         cfg.max_iter_step = int(args.epochs * images_per_epoch // args.batch_size)
+        # --max_iters：小规模训练/冒烟验证用（截断迭代数，不改配置语义）。
+        max_iters = int(getattr(args, 'max_iters', 0) or 0)
+        if max_iters > 0:
+            cfg.max_iter_step = min(int(cfg.max_iter_step), max_iters)
         if cfg.show_img_num > args.batch_size:
             cfg.show_img_num = args.batch_size
 
@@ -133,19 +137,10 @@ class BaseTrainer:
     # -------------------- optimizer + resume + save --------------------
 
     def _build_optimizer_and_scheduler(self, args, cfg):
-        # V3.1 joint_finetune：把 Front ISP 的可训练标定参数加入 optimizer，
-        # lr 乘 lr_calib_mul（≪ 1），避免基础颜色空间被任务奖励大幅破坏。
-        stage = str((cfg.get('training', {}) or {}).get('stage', 'adaptive_train'))
-        lr_calib_mul = float((cfg.get('training', {}) or {}).get('lr_calib_mul', 0.01))
-        calib_params = []
-        if stage == 'joint_finetune':
-            calib_params = [p for p in self.front_isp.parameters() if p.requires_grad]
-            if calib_params:
-                print(f"joint_finetune: +{len(calib_params)} calibration tensors "
-                      f"at lr={args.lr * lr_calib_mul:.2e} (mul={lr_calib_mul})")
+        # V3.1 两阶段训练：Stage 2 的 optimizer 只含 Controller —— Front
+        # ISP 恒冻结（可学习参数在 Stage 1 由 CalibrationTrainer 训练，
+        # 不与 AdaptiveISP 联合）。
         groups = [{'params': self.controller.parameters(), 'lr': args.lr}]
-        if calib_params:
-            groups.append({'params': calib_params, 'lr': args.lr * lr_calib_mul})
         optim = torch.optim.Adam(groups)
         max_iter_step = int(cfg.max_iter_step)
         lr_decay = self._lr_decay
@@ -167,15 +162,14 @@ class BaseTrainer:
                 "Resume ckpt is legacy format; Controller has different "
                 "architecture — starting fresh."
             )
-        # V3.1: resume the calibration state when present.
-        if 'front_isp' in ckpt:
-            from front_isp.calibration import CalibratedFrontISP
-            if isinstance(getattr(self, 'front_isp', None), CalibratedFrontISP):
-                try:
-                    self.front_isp.load_state_dict(ckpt['front_isp'])
-                    print("resumed calibration state from ckpt")
-                except RuntimeError as exc:
-                    logger.warning(f"calibration state mismatch: {exc}")
+        # V3.1: resume the Front ISP state when present (learnable mode).
+        if 'front_isp' in ckpt and getattr(self, 'front_isp', None) is not None \
+                and len(self.front_isp.state_dict()) > 0:
+            try:
+                self.front_isp.load_state_dict(ckpt['front_isp'])
+                print("resumed front_isp state from ckpt")
+            except RuntimeError as exc:
+                logger.warning(f"front_isp state mismatch: {exc}")
 
     def _save_ckpt(self, iter_idx: int, optim, extra: Optional[dict] = None) -> None:
         self.controller.eval()
