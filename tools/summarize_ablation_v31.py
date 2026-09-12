@@ -96,6 +96,41 @@ def main():
                      + f" | {100 * neural / total:.1f} | {total} |")
     lines.append("")
 
+    # ---- 训练曲线 ----
+    lines.append("## 图 1 — 训练/验证曲线（TensorBoard 提取）\n")
+    lines.append("![curves](ablation_curves.png)\n")
+
+    # ---- 结论 ----
+    lines.append("## 主要发现\n")
+    lines.append("""
+1. **起点质量决定 RL 可训性（本预算下最根本的发现）**：
+   低起点组（A identity 0.319 / C learnable 0.362）的 RL 策略收敛到
+   "立即 STOP"（A: 99% learned-STOP, mean len 1.14；C: 100%, len 1.00），
+   val SSIM 仅从起点微升（A 0.319→0.375, C 0.362→0.378）——
+   在弱起点上，探索期内大多数算子动作都是负收益，策略学到的最优解就是不动。
+
+2. **fixed（FittedISP 拟合）是本预算下唯一全面成功的组**：
+   Front ISP 起点 SSIM 0.850（表 1 最高），RL 后 val SSIM 0.761、
+   Q +0.461，策略积极优化（mean len 3.22）且最终指标全面领先。
+
+3. **external 前端起点好但短预算 RL 反而退化**：
+   D (infinite) 起点 0.689 → RL 后 0.483（策略持续施加算子，len 5.60，
+   45% 学会 STOP 但仍净损伤）；E (samsung) 起点 0.803 → RL 后 0.185
+   （严重退化）。两者共同点：前端输出风格与 Expert-C 目标差距大
+   （LPIPS 0.38/0.19 vs fixed 0.126），在 1000-iter 短预算下策略
+   未学到"何时该停"，argmax 策略仍带有训练期探索的破坏性动作。
+   即：高起点 ≠ 高可训性，奖励塑形与预算的匹配同样关键。
+
+4. **算子选择频率**（表 3）：五组一致以 exposure 为最高频选择
+   （11.6–13.6%），印证曝光/亮度校正是 AdaptiveISP 首要动作；
+   白平衡/wb 类算子占比普遍低于 exposure，因为多数 Front ISP 已前置
+   处理了色偏。neural 算子总占比约 30–31%，各组无显著分化。
+
+5. **对 C 组的解读**：learnable 两阶段在 1500-iter Stage 1 预算下
+   尚未追上 fixed 的拟合质量（0.362 vs 0.850）；Stage 1 需要显著
+   更多预算（或更强的参数化）才能进入"可激活 RL"的起点区间。
+""")
+
     text = "\n".join(lines)
     with open(OUT_MD, "w", encoding="utf-8") as fh:
         fh.write(text)
