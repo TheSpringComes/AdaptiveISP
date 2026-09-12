@@ -23,8 +23,8 @@ ISP 之后的算子选择与参数优化。
     external  — 接入现有开源 ISP（backend: infinite_isp | samsung_isp），
                 wrapper 统一输入输出，AdaptiveISP 不感知具体实现。
 
-legacy 别名（继续可用）：none=identity、calibrated=learnable、
-canonical（V3-A1 固定链）、infinite_isp / modular_neural_isp（直连 wrapper）。
+legacy 类型名（继续可用）：none=identity、canonical（V3-A1 固定链）、
+infinite_isp / modular_neural_isp（直连 wrapper）。
 
 对外入口不变：
 
@@ -43,7 +43,7 @@ from front_isp.registry import (
 from front_isp.identity import IdentityFrontISP                    # noqa: F401
 from front_isp.fixed import FixedFrontISP                         # noqa: F401
 from front_isp.canonical import CanonicalBackbone                 # noqa: F401
-from front_isp.learnable import LearnableFrontISP, CalibratedFrontISP  # noqa: F401
+from front_isp.learnable import LearnableFrontISP                    # noqa: F401
 from front_isp.external import ExternalFrontISP                   # noqa: F401
 from front_isp.infinite_isp import InfiniteISPFront               # noqa: F401
 from front_isp.modular_neural_isp import ModularNeuralISPFront     # noqa: F401
@@ -80,7 +80,6 @@ __all__ = [
     "FixedFrontISP",
     "CanonicalBackbone",
     "LearnableFrontISP",
-    "CalibratedFrontISP",
     "ExternalFrontISP",
     "InfiniteISPFront",
     "ModularNeuralISPFront",

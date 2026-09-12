@@ -29,10 +29,9 @@ if _ROOT not in sys.path:
 
 def _add_shared_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--task", type=str, default="detection",
-                   choices=["detection", "human", "learnable", "calibration"],
+                   choices=["detection", "human", "learnable"],
                    help="downstream task; picks the trainer subclass "
-                        "(learnable = Stage 1 learnable Front ISP pretrain; "
-                        "calibration 是旧名别名)")
+                        "(learnable = Stage 1 learnable Front ISP pretrain)")
     p.add_argument("--mode", type=str, default="train_val",
                    choices=["train", "train_val"],
                    help="train, or train and val (val-mode mAP eval lives in tools/val.py)")
@@ -125,8 +124,6 @@ def main() -> None:
     elif args.task == "human":
         _run_human(args)
     elif args.task == "learnable":
-        _run_learnable(args)
-    elif args.task == "calibration":      # legacy 别名
         _run_learnable(args)
     else:
         raise ValueError(f"unknown --task: {args.task!r}")

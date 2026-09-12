@@ -127,7 +127,7 @@ RAW → Input Adapter (Dataset layer: Bayer reconstruction per per-file CFA patt
 |---|---|---|
 | `identity` | 不使用 Front ISP（对照组，旧名 `none`） | `front_isp/identity.py` |
 | `fixed` | 人工配置 ISP：WB / CCM / Bias / Gamma / Exposure / Smoothstep 等模块，顺序与参数全部由 `fixed.modules` 配置指定，训练不更新；模块注册表开放扩展 | `front_isp/fixed.py` |
-| `learnable` | 固定结构 + 可训练参数（WB gain / CCM / Bias / Gamma，camera-specific 参数表，旧名 `calibrated`）。**两阶段训练**：Stage 1 只训 Front ISP 并冻结；Stage 2 跑 AdaptiveISP。不联合训练 | `front_isp/learnable/` |
+| `learnable` | 固定结构 + 可训练参数（WB gain / CCM / Bias / Gamma，camera-specific 参数表，**两阶段训练**：Stage 1 只训 Front ISP 并冻结；Stage 2 跑 AdaptiveISP。不联合训练 | `front_isp/learnable/` |
 | `external` | 接入现有开源 ISP：`backend: infinite_isp \| samsung_isp`，wrapper 统一输入输出 | `front_isp/external.py` + wrappers |
 
 - **两阶段训练（learnable）**：Stage 1 `tools/train.py --task learnable`（loss = λ₁L1 + λ_s(1−SSIM) + λ_pLPIPS vs Expert C），保存 ckpt 并冻结；Stage 2 `--task human` 加载冻结的 Front ISP 跑 AdaptiveISP。不做联合训练，避免两部分同时变化后难以归因。
@@ -152,7 +152,7 @@ python tools/train.py --task human \
 # 小规模验证：任意训练加 --max_iters N 截断迭代数
 ```
 
-Configs: `v31_pretrain.yaml`（Stage 1）、`v31_stage2.yaml`（Stage 2，冻结加载 Stage-1 ckpt）、`v31_fixed.yaml`（fixed）、`v31_external.yaml`（external）。Legacy 类型名（none / calibrated / canonical / infinite_isp / modular_neural_isp）全部保留为别名。Deliberately out of scope（future versions）：image-adaptive CCM、neural calibration networks、RL-searched calibration、local tone mapping。
+Configs: `v31_pretrain.yaml`（Stage 1）、`v31_stage2.yaml`（Stage 2，冻结加载 Stage-1 ckpt）、`v31_fixed.yaml`（fixed）、`v31_external.yaml`（external）。Legacy 类型名（none / canonical / infinite_isp / modular_neural_isp）保留为别名。Deliberately out of scope（future versions）：image-adaptive CCM、neural parameter predictors、RL-searched front-ISP params、local tone mapping。
 
 ## Repository layout
 

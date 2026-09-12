@@ -12,12 +12,7 @@ _FRONT_ISP_REGISTRY: Dict[str, Type[FrontISPBase]] = {}
 
 # 各类型在主配置里的子键候选（按优先级）。V3.1 统一四种模式：
 #     identity | fixed | learnable | external
-# legacy 名称（none / calibrated / canonical / infinite_isp /
-# modular_neural_isp）保留为别名，旧配置继续可用。
-_SUBKEY_CANDIDATES: Dict[str, list] = {
-    'learnable': ['learnable', 'calibration'],
-    'calibrated': ['calibration', 'calibrated', 'learnable'],
-}
+_SUBKEY_CANDIDATES: Dict[str, list] = {}
 
 
 def register_front_isp(name: str):
@@ -75,8 +70,7 @@ def build_front_isp(config: Dict[str, Any]) -> FrontISPBase:
 
     cls = _FRONT_ISP_REGISTRY[front_type]
     # 传递对应类型的子配置。每个类型的主子键与其类型同名
-    # （fixed / learnable / external）；learnable 的旧名 'calibration'
-    # 与旧类型名 'calibrated' 的子键均保留兼容。
+    # （fixed / learnable / external）。
     sub_config = None
     for key in _SUBKEY_CANDIDATES.get(front_type, [front_type]):
         if config.get(key) is not None:

@@ -49,7 +49,7 @@ Camera model (V3.1): `camera_json` (auto-discovered as `camera.json` next
 to the cache_dir; produced by `tools/fivek_camera_metadata.py`) maps
 `<stem> → "<Make> <Model>"` from the DNG EXIF. Samples are tagged with an
 integer camera id (index into the sorted name list) so the camera-specific
-Calibration front ISP can select its parameter row. A missing file is not
+Learnable front ISP can select its parameter row. A missing file is not
 fatal — all samples get camera id 0.
 
 When `return_camera=True` (default) `__getitem__` returns

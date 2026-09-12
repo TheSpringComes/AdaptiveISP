@@ -43,7 +43,7 @@ class LearnableTrainer(BaseTrainer):
 
     banner = ("LearnableTrainer begin....\n"
               "------- V3.1 Stage 1: RAW → LearnableISP → Base RGB vs Expert C ---------")
-    ckpt_prefix = "CalibISP"
+    ckpt_prefix = "LearnableISP"
 
     def __init__(self, args, task: str = "train") -> None:
         train = task in ("train", "train_val")
@@ -73,16 +73,15 @@ class LearnableTrainer(BaseTrainer):
             collate_fn=collate_fivek,
         )
 
-        # --- Front ISP (must be learnable / legacy 'calibrated') ---
+        # --- Front ISP (must be learnable) ---
         # 注入 n_cameras：camera_specific 时按数据侧实际相机数建表。
         fi_cfg = cfg.get('front_isp', {}) or {}
-        if fi_cfg.get('type') not in ('learnable', 'calibrated'):
+        if fi_cfg.get('type') != 'learnable':
             raise SystemExit(
                 "LearnableTrainer 需要 front_isp.type == learnable，"
                 f"得到 {fi_cfg.get('type', 'none')!r}。请使用 V3.1 预训练 config。"
             )
-        calib_cfg = ((fi_cfg.get('learnable', {}) or {})
-                     or (fi_cfg.get('calibration', {}) or {}))
+        calib_cfg = (fi_cfg.get('learnable', {}) or {})
         if calib_cfg.get('camera_specific', False):
             calib_cfg['n_cameras'] = max(self.train_dataset.n_cameras,
                                          self.val_dataset.n_cameras)
@@ -237,7 +236,7 @@ class LearnableTrainer(BaseTrainer):
         metrics = {'val/psnr': psnr_s / max(n, 1), 'val/ssim': ssim_s / max(n, 1),
                    'val/lpips': lpips_s / max(n, 1), 'val/delta_e': de_s / max(n, 1),
                    'val/n_samples': n}
-        print("\n===== VAL (Calibration, end of training) =====")
+        print("\n===== VAL (Learnable Front ISP, end of training) =====")
         print(f"  samples: {n}")
         print(f"  PSNR:  {metrics['val/psnr']:.2f} dB")
         print(f"  SSIM:  {metrics['val/ssim']:.4f}")
@@ -254,7 +253,3 @@ class LearnableTrainer(BaseTrainer):
 
 
 __all__ = ["LearnableTrainer"]
-
-
-# legacy 别名（V3.1 前的旧类名）
-CalibrationTrainer = LearnableTrainer

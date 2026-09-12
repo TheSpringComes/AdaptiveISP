@@ -1,6 +1,6 @@
 # V3.1 Stage 2 — AdaptiveISP 训练（learnable Front ISP 冻结）。
 #
-#     Stage 1 产物（CalibISP ckpt）→ 加载并冻结
+#     Stage 1 产物（LearnableISP ckpt）→ 加载并冻结
 #         ↓
 #     AdaptiveISP（Controller + RL，V3 逻辑不变）
 #         ↓
@@ -44,8 +44,8 @@ front_isp:
     tone:         {learnable: true}
     init:
       type: identity
-    # Stage 1 预训练结果（CalibISP ckpt），构建时加载后冻结：
-    ckpt: experiments/v31_stage1/ckpt/CalibISP_iter_2500.pth
+    # Stage 1 预训练结果（LearnableISP ckpt），构建时加载后冻结：
+    ckpt: experiments/v31_stage1/ckpt/LearnableISP_iter_2500.pth
 
 # ---------- 其余与 H-BASE 相同 ----------
 action_mask:

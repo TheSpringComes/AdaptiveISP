@@ -1,4 +1,4 @@
-"""可微色彩变换 — Calibration 前向的每一步（V3.1 §1）。
+"""可微色彩变换 — learnable Front ISP 前向的每一步（V3.1 §1）。
 
 变换顺序（Demosaic 固定在数据层，见 module.py 的说明）：
 
@@ -21,7 +21,7 @@ import torch
 
 @dataclass
 class CameraParams:
-    """单次前向所用的一组标定参数（batch 维收集后）。
+    """单次前向所用的一组可学习参数（batch 维收集后）。
 
     wb_log:   (B, 3)      白平衡增益的 log
     ccm:      (B, 3, 3)   色彩校正矩阵
@@ -55,7 +55,7 @@ def apply_tone(x: torch.Tensor, log_gamma: torch.Tensor) -> torch.Tensor:
 
 
 def apply_learnable(x: torch.Tensor, p: CameraParams) -> torch.Tensor:
-    """完整标定链：WB → CCM+Bias → Tone。输出未做 [0,1] 裁剪（由调用方决定，
+    """完整 learnable 变换链：WB → CCM+Bias → Tone。输出未做 [0,1] 裁剪（由调用方决定，
     训练时保留端点外梯度更友好，推理时 clamp）。"""
     x = apply_wb(x, p.wb_log)
     x = apply_ccm_bias(x, p.ccm, p.bias)

@@ -21,7 +21,7 @@ FittedISP 拟合输出的是 "RAW–Camera RGB" 对上的线性映射（CCM + Bi
     bias      : "bias", "offset", "b"                          → (3,)
     gamma/tone: "gamma", "tone", "exponent"                    → scalar
 
-支持的外层包装：dict 本体、或 {"params": {...}} / {"calibration": {...}}
+支持的外层包装：dict 本体、或 {"params": {...}}
 嵌套；数值可给线性域（wb>0、gamma>0，取 log）。
 """
 from __future__ import annotations
@@ -53,7 +53,7 @@ def _as_tensor(x: Any) -> torch.Tensor:
 
 
 def load_fittedisp_params(cfg: Dict[str, Any]) -> Dict[str, torch.Tensor]:
-    """从 FittedISP 导出文件 / 内联 dict 读取，返回标定参数（log 域）。
+    """从 FittedISP 导出文件 / 内联 dict 读取，返回可学习参数（log 域）。
 
     cfg 支持：
         params: JSON 文件路径 或 内联 dict 或 {"wb":..,"ccm":..}
@@ -75,7 +75,7 @@ def load_fittedisp_params(cfg: Dict[str, Any]) -> Dict[str, torch.Tensor]:
         else:
             raise TypeError(f"init.params 应为路径或 dict，得到 {type(src)}")
         # 常见的外层包装。
-        for wrap in ("params", "calibration", "fittedisp"):
+        for wrap in ("params", "fittedisp"):
             if isinstance(data.get(wrap), dict):
                 data = {**data, **data[wrap]}
 

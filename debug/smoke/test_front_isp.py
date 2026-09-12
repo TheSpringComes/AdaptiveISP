@@ -35,9 +35,10 @@ def test_front_isp() -> None:
     # --- registration: V3.1 四种模式 + legacy 别名 ---
     registered = fi.list_front_isps()
     for t in ('identity', 'fixed', 'learnable', 'external',          # V3.1
-              'none', 'calibrated', 'canonical',                     # legacy
+              'none', 'canonical',                                   # legacy
               'infinite_isp', 'modular_neural_isp'):
         assert t in registered, f"{t} not registered: {registered}"
+    assert 'calibrated' not in registered   # calibration 旧名已删除
 
     # --- build: disabled / identity / legacy none → Identity ---
     assert isinstance(fi.build_front_isp({'enabled': False, 'type': 'fixed'}),
@@ -117,14 +118,11 @@ def test_front_isp() -> None:
         except (FileNotFoundError, NotImplementedError, ImportError):
             pass
 
-    # --- learnable 别名：new type name 与旧名等价 ---
-    from front_isp.learnable import LearnableFrontISP, CalibratedFrontISP
+    # --- learnable: camera-specific 构建 ---
+    from front_isp.learnable import LearnableFrontISP
     m_new = fi.build_front_isp({'type': 'learnable', 'learnable': {
         'camera_specific': True, 'n_cameras': 3}})
-    m_old = fi.build_front_isp({'type': 'calibrated', 'calibration': {
-        'camera_specific': True, 'n_cameras': 3}})
     assert isinstance(m_new, LearnableFrontISP) and m_new.table.n_cameras == 3
-    assert isinstance(m_old, LearnableFrontISP) and m_old.table.n_cameras == 3
 
     # --- canonical: shape / range / non-trivial ---
     canonical = fi.build_front_isp({'type': 'canonical'})

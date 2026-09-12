@@ -1,6 +1,6 @@
 """Learnable Front ISP — 可学习相机参数（V3.1 模式之三，`type: learnable`）。
 
-对应 config（旧名 `type: calibrated` + `calibration:` 子键仍可用）：
+对应 config：
 
     front_isp:
       enabled: true
@@ -15,7 +15,7 @@
         init:
           type: fittedisp        # identity | fittedisp | camera_specific
           params: params.json
-        ckpt: <Stage-1 CalibISP ckpt>  # 两阶段训练：Stage 2 构建时加载并冻结
+        ckpt: <Stage-1 LearnableISP ckpt>  # 两阶段训练：Stage 2 构建时加载并冻结
 
 前向（V3.1 §1）：
 
@@ -42,21 +42,14 @@ from front_isp.registry import register_front_isp
 
 
 @register_front_isp('learnable')
-@register_front_isp('calibrated')
 class LearnableFrontISP(FrontISPBase):
-    """可学习相机标定 Front ISP（V3.1 模式之三，`type: learnable`）。
-
-    旧名 `type: calibrated` 仍可用（同一实现，等价别名）。
-    """
+    """可学习相机参数 Front ISP（V3.1 模式之三，`type: learnable`）。"""
 
     def __init__(self, config: Optional[Dict[str, Any]] = None) -> None:
         super().__init__(config)
-        # config 既可为 {'learnable': {...}} / {'calibration': {...}}
-        # （YAML 主配置的子键，两个名字等价），也可直接是参数体
-        # （registry 以子键传入时）。
+        # config 既可为 {'learnable': {...}}（YAML 主配置的子键），
+        # 也可直接是参数体（registry 以子键传入时）。
         calib = self.config.get('learnable', None)
-        if calib is None:
-            calib = self.config.get('calibration', None)
         if calib is None:
             calib = dict(self.config)
 
@@ -137,13 +130,13 @@ class LearnableFrontISP(FrontISPBase):
     # ---------------- training stage helpers ----------------
 
     def freeze(self) -> None:
-        """Stage 2（adaptive_train）：冻结全部标定参数。"""
+        """Stage 2（adaptive_train）：冻结全部可学习参数。"""
         self.table.set_learnable(wb=False, ccm=False, bias=False, tone=False)
         for p in self.parameters():
             p.requires_grad_(False)
 
     def trainable_parameters(self) -> list:
-        """Stage 1（calibration_pretrain）：可训练参数。"""
+        """Stage 1（learnable pretrain）：可训练参数。"""
         return [p for p in self.parameters() if p.requires_grad]
 
     def __repr__(self) -> str:
@@ -151,7 +144,4 @@ class LearnableFrontISP(FrontISPBase):
                 f"table={self.table!r})")
 
 
-__all__ = ["LearnableFrontISP", "CalibratedFrontISP"]
-
-# legacy 别名（V3.1 前的旧类名）
-CalibratedFrontISP = LearnableFrontISP
+__all__ = ["LearnableFrontISP"]

@@ -94,10 +94,8 @@ class HumanTrainer(BaseTrainer):
         # Front ISP the dataset's camera count so its parameter table is
         # sized correctly.
         fi_cfg = cfg.get('front_isp', {}) or {}
-        calib_cfg = ((fi_cfg.get('learnable', {}) or {})
-                     or (fi_cfg.get('calibration', {}) or {}))
-        if fi_cfg.get('type') in ('learnable', 'calibrated') and \
-                calib_cfg.get('camera_specific'):
+        calib_cfg = (fi_cfg.get('learnable', {}) or {})
+        if fi_cfg.get('type') == 'learnable' and calib_cfg.get('camera_specific'):
             calib_cfg['n_cameras'] = max(self.train_dataset.n_cameras,
                                          self.val_dataset.n_cameras)
         self._build_pipeline_subsystems(cfg, self.device)

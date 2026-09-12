@@ -70,11 +70,10 @@ filter_runtime_penalty_lambda: 0.01
 #               Front ISP（--task learnable，见
 #               configs/adaptiveisp_human_v31_pretrain.yaml），冻结后
 #               Stage 2 跑 AdaptiveISP（v31_stage2.yaml）。
-#               旧名 calibrated。
 #   external  — 接入现有开源 ISP，backend: infinite_isp | samsung_isp，
 #               wrapper 统一输入输出（见 front_isp/external.py）
 #
-# legacy 别名继续可用：none / calibrated / canonical（V3-A1 固定链）/
+# legacy 类型名继续可用：none / canonical（V3-A1 固定链）/
 # infinite_isp / modular_neural_isp（直连 wrapper）。
 #
 # 每套 Front ISP 保留自己的内部配置（不抹平其可配置能力）：

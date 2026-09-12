@@ -1,15 +1,15 @@
-"""Camera Parameter Table — camera-specific 标定参数存储（V3.1 §3）。
+"""Camera Parameter Table — camera-specific 可学习参数存储（V3.1 §3）。
 
     Camera ID → Camera Parameter Table
-        ├─ Camera A → Calibration A
-        ├─ Camera B → Calibration B
-        └─ Camera C → Calibration C
+        ├─ Camera A → 参数组 A
+        ├─ Camera B → 参数组 B
+        └─ Camera C → 参数组 C
 
 每台相机一行参数：{WB, CCM, Bias, Gamma}（V3.1 第一版不引入 neural
-calibration predictor）。`camera_specific=False` 时退化为单行共享参数。
+neural predictor）。`camera_specific=False` 时退化为单行共享参数。
 
 初始化方式（V3.1 §2）：
-    identity       — WB=1, CCM=I, Bias=0, Gamma=1（中性标定，不改图像）
+    identity       — WB=1, CCM=I, Bias=0, Gamma=1（中性初始化，不改图像）
     fittedisp      — 从 FittedISP 导出的 params.json 初始化
     camera_specific — 每台相机各自初始化（第一版 = identity per camera，
                       为后续 per-camera 表预留入口）
@@ -30,7 +30,7 @@ _PARAM_KEYS = ("wb", "ccm", "bias", "gamma")
 
 
 class CameraParamTable(nn.Module):
-    """`(n_cameras, ·)` 形状的标定参数表，按 camera id 索引取行。"""
+    """`(n_cameras, ·)` 形状的可学习参数表，按 camera id 索引取行。"""
 
     def __init__(
         self,
@@ -46,7 +46,7 @@ class CameraParamTable(nn.Module):
         init = str(init)
         if init not in ("identity", "fittedisp", "camera_specific"):
             raise ValueError(
-                f"未知 calibration init: '{init}'。"
+                f"未知 learnable init: '{init}'。"
                 "可用: identity | fittedisp | camera_specific"
             )
         # camera_specific 第一版 = identity per camera（预留 per-camera 表）。

@@ -33,14 +33,14 @@ STAGE2_CFG=configs/adaptiveisp_human_v31_stage2.yaml
 FIXED_CFG=configs/adaptiveisp_human_v31_fixed.yaml
 
 echo "================================================================"
-echo "[1/4] learnable Front ISP Stage 1 — pretrain (calibration)"
+echo "[1/4] learnable Front ISP Stage 1 — pretrain"
 echo "================================================================"
 python -u tools/train.py --task learnable \
     --cfg "$CALIB_CFG" --save_path v31_stage1 \
     --epochs "$E1" --batch_size 8 "${EXTRA[@]}"
 
 # 最新 Stage-1 ckpt，Stage 2 从它初始化并冻结。
-CALIB_CKPT=$(ls -1 experiments/v31_stage1/ckpt/CalibISP_iter_*.pth \
+CALIB_CKPT=$(ls -1 experiments/v31_stage1/ckpt/LearnableISP_iter_*.pth \
     | sort -t_ -k3 -n | tail -n 1)
 echo "stage-1 ckpt: $CALIB_CKPT"
 
@@ -50,7 +50,7 @@ python - "$STAGE2_CFG" "$STAGE2_RUN_CFG" "$CALIB_CKPT" <<'PY'
 import re, sys
 src, dst, ckpt = sys.argv[1:4]
 cfg = open(src).read()
-cfg = re.sub(r'ckpt: \S*CalibISP_iter_\d+\.pth', f'ckpt: {ckpt}', cfg)
+cfg = re.sub(r'ckpt: \S*LearnableISP_iter_\d+\.pth', f'ckpt: {ckpt}', cfg)
 open(dst, 'w').write(cfg)
 PY
 

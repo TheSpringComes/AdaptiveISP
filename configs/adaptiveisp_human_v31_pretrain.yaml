@@ -10,7 +10,7 @@
 #       --cfg configs/adaptiveisp_human_v31_pretrain.yaml \
 #       --save_path v31_stage1 --epochs 5 --batch_size 8
 #
-# 产出：experiments/v31_stage1/ckpt/CalibISP_iter_*.pth
+# 产出：experiments/v31_stage1/ckpt/LearnableISP_iter_*.pth
 #（含 front_isp 标定 state + camera_names），供 Stage 2 加载后冻结。
 #
 # 小规模验证：加 --max_iters 40（配合 save_model_freq: 20）。

@@ -1,7 +1,7 @@
 """smoke: V3.1 Learnable Front ISP — module, camera table, gradient, stages.
 
 Covers:
-  - 'learnable' registered; build via config (legacy 'calibrated' alias kept)
+  - 'learnable' registered; build via config
   - identity init is a true no-op on the image
   - camera-specific rows differ; metadata camera_id selects them
   - gradients flow into wb/ccm/bias/gamma (learnable) and stop when frozen
@@ -30,22 +30,17 @@ def test_learnable() -> None:
     from front_isp.learnable.fittedisp_loader import load_fittedisp_params
 
     assert 'learnable' in fi.list_front_isps()
-    assert 'calibrated' in fi.list_front_isps()   # legacy alias
-    assert 'learnable' in fi.list_front_isps()   # V3.1 统一模式名
+    assert 'calibrated' not in fi.list_front_isps()   # 旧名已删除
 
     # --- build via config (shared params) ---
     m = fi.build_front_isp({'type': 'learnable'})
     assert isinstance(m, LearnableFrontISP)
     assert m.table.n_cameras == 1
 
-    # --- legacy 别名等价：旧 type 名 + 旧子键也可构建 ---
-    m2 = fi.build_front_isp({'type': 'calibrated', 'calibration': {
-        'camera_specific': True, 'n_cameras': 2}})
-    assert isinstance(m2, LearnableFrontISP) and m2.table.n_cameras == 2
-    # 新旧子键混用也可（learnable 子键 + 旧 type 名）
-    m3 = fi.build_front_isp({'type': 'calibrated', 'learnable': {
-        'camera_specific': True, 'n_cameras': 2}})
-    assert isinstance(m3, LearnableFrontISP) and m3.table.n_cameras == 2
+    # --- camera-specific rows + metadata dispatch ---
+    m2 = fi.build_front_isp({'type': 'learnable', 'learnable': {
+        'camera_specific': True, 'n_cameras': 3}})
+    assert isinstance(m2, LearnableFrontISP) and m2.table.n_cameras == 3
 
     x = torch.rand(2, 3, 16, 24)
     y = m(x)  # no metadata → row 0
@@ -83,7 +78,7 @@ def test_learnable() -> None:
     assert m.trainable_parameters() == []
     x = torch.rand(1, 3, 8, 8)
     out = m(x)
-    assert not out.requires_grad, "frozen calibration should detach the graph"
+    assert not out.requires_grad, "frozen learnable front ISP should detach the graph"
 
     # --- learnable flags from config ---
     m = fi.build_front_isp({'type': 'learnable', 'learnable': {
@@ -110,7 +105,7 @@ def test_learnable() -> None:
         'init': {'type': 'fittedisp', 'params': {'wb': [1.1, 1, 0.9], 'gamma': 1.8}}}})
     x = torch.rand(1, 3, 8, 8)
     y = m(x)
-    assert not torch.allclose(y, x)  # non-identity calibration applied
+    assert not torch.allclose(y, x)  # non-identity params applied
 
     # --- ckpt round-trip ---
     m = fi.build_front_isp({'type': 'learnable'})
@@ -124,7 +119,7 @@ def test_learnable() -> None:
 
     # ckpt key style used by LearnableTrainer ({"front_isp": state})
     with tempfile.TemporaryDirectory() as td:
-        ck = os.path.join(td, 'CalibISP_iter_10.pth')
+        ck = os.path.join(td, 'LearnableISP_iter_10.pth')
         torch.save({'front_isp': state, 'task': 'learnable_pretrain'}, ck)
         m3 = fi.build_front_isp({'type': 'learnable', 'learnable': {'ckpt': ck}})
         assert torch.allclose(m.table.wb_log, m3.table.wb_log)

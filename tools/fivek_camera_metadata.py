@@ -1,6 +1,6 @@
 """Extract camera Make/Model from every FiveK DNG, write a metadata JSON.
 
-V3.1 camera-specific Calibration needs a `<stem> → "<Make> <Model>"` map
+V3.1 camera-specific learnable params need a `<stem> → "<Make> <Model>"` map
 per sample. This tool walks the `fivek_dataset/raw_photos/` tree, reads
 EXIF tags 271 (Make) / 272 (Model) from every DNG, and writes the JSON
 that `tasks.human_quality.dataset.FiveKDataset` auto-discovers as
@@ -14,7 +14,7 @@ One-time setup, same pattern as `tools/fivek_orientation_metadata.py`:
         --out       /home/jing/datasets/fivek/camera.json
 
 A DNG with missing/unreadable EXIF maps to "unknown" (all such samples
-share one calibration row).
+share one parameter row).
 """
 from __future__ import annotations
 

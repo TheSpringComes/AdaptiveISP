@@ -20,7 +20,7 @@
 
 用法:
     python tools/vis_val_color.py --n 4
-    python tools/vis_val_color.py --n 6 --ckpt experiments/v31_stage1/ckpt/CalibISP_iter_2500.pth
+    python tools/vis_val_color.py --n 6 --ckpt experiments/v31_stage1/ckpt/LearnableISP_iter_2500.pth
     python tools/vis_val_color.py --stems a0001-jmac_DSC1459 a0006-IMG_2787
 """
 from __future__ import annotations
@@ -45,7 +45,7 @@ import matplotlib.pyplot as plt
 from tasks.human_quality import FiveKDataset
 from tasks.human_quality.metrics import psnr_batch, ssim_batch, delta_e_batch
 from front_isp.canonical import CanonicalBackbone
-from front_isp.learnable import LearnableFrontISP as CalibratedFrontISP
+from front_isp.learnable import LearnableFrontISP
 
 
 def _to_np(x: torch.Tensor) -> np.ndarray:
@@ -63,7 +63,7 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--tag", default="")
     ap.add_argument("--ckpt", default=None,
-                    help="Stage-1 CalibISP ckpt; 缺省则 col3 用 identity")
+                    help="Stage-1 LearnableISP ckpt; 缺省则 col3 用 identity")
     ap.add_argument("--stems", nargs="*", default=None,
                     help="指定 stem 而不是随机抽样")
     ap.add_argument("--val-list",
@@ -91,13 +91,13 @@ def main() -> None:
 
     # front ISPs
     canonical = CanonicalBackbone({}).eval()
-    calib_cfg = {"calibration": {
+    calib_cfg = {"learnable": {
         "camera_specific": True, "n_cameras": ds.n_cameras,
         "init": {"type": "identity"},
     }}
     if a.ckpt:
-        calib_cfg["calibration"]["ckpt"] = a.ckpt
-    calibrated = CalibratedFrontISP(calib_cfg).eval()  # legacy alias for LearnableFrontISP
+        calib_cfg["learnable"]["ckpt"] = a.ckpt
+    learnable_isp = LearnableFrontISP(calib_cfg).eval()
 
     # alignment scores for row titles
     align = {}
@@ -111,7 +111,7 @@ def main() -> None:
     fig, axes = plt.subplots(n, 4, figsize=(20, 5 * n), squeeze=False)
     col_titles = ["1. Dataset RGB3\n(demosaiced linear)",
                   "2. Canonical\n(fixed ISP)",
-                  "3. Calibrated\n(%s)" % ("Stage-1 ckpt" if a.ckpt else "identity"),
+                  "3. Learnable\n(%s)" % ("Stage-1 ckpt" if a.ckpt else "identity"),
                   "4. Expert-C target"]
 
     lines = []
@@ -124,7 +124,7 @@ def main() -> None:
         with torch.no_grad():
             b = img.unsqueeze(0)
             out_can = canonical.process(b).squeeze(0)
-            out_cal = calibrated.process(
+            out_cal = learnable_isp.process(
                 b, {"camera_id": torch.tensor([cam_id])}).squeeze(0)
 
         panels = [img, out_can, out_cal, tgt]
@@ -141,7 +141,7 @@ def main() -> None:
         # metrics col2/col3 vs target (full-res, on same grid)
         with torch.no_grad():
             t = tgt.unsqueeze(0)
-            for name, out in (("canonical", out_can), ("calibrated", out_cal)):
+            for name, out in (("canonical", out_can), ("learnable", out_cal)):
                 o = out.unsqueeze(0)
                 psnr = psnr_batch(o, t).item()
                 ssim = ssim_batch(o, t).item()
