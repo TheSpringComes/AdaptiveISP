@@ -8,7 +8,7 @@
   col2  Canonical front-ISP — 固定 AWB+CCM+smoothstep+gamma
                               (cam2rgb 为 CycleISP 合成管线校准,
                                对真实 FiveK RAW 失配,作为"坏基线"对照)
-  col3  Calibrated identity — CalibratedFrontISP(init=identity, 未训练)
+  col3  Learnable identity — LearnableFrontISP(init=identity, 未训练)
                               (展示 Stage-1 尚未学习时的直通输出;
                                若传入 --ckpt 则加载 Stage-1 结果)
   col4  Expert-C target     — sRGB 参考
@@ -45,7 +45,7 @@ import matplotlib.pyplot as plt
 from tasks.human_quality import FiveKDataset
 from tasks.human_quality.metrics import psnr_batch, ssim_batch, delta_e_batch
 from front_isp.canonical import CanonicalBackbone
-from front_isp.calibration import CalibratedFrontISP
+from front_isp.learnable import LearnableFrontISP as CalibratedFrontISP
 
 
 def _to_np(x: torch.Tensor) -> np.ndarray:
@@ -97,7 +97,7 @@ def main() -> None:
     }}
     if a.ckpt:
         calib_cfg["calibration"]["ckpt"] = a.ckpt
-    calibrated = CalibratedFrontISP(calib_cfg).eval()
+    calibrated = CalibratedFrontISP(calib_cfg).eval()  # legacy alias for LearnableFrontISP
 
     # alignment scores for row titles
     align = {}

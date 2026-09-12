@@ -54,7 +54,7 @@ def apply_tone(x: torch.Tensor, log_gamma: torch.Tensor) -> torch.Tensor:
     return x.clamp(min=0.0).pow(gamma)
 
 
-def apply_calibration(x: torch.Tensor, p: CameraParams) -> torch.Tensor:
+def apply_learnable(x: torch.Tensor, p: CameraParams) -> torch.Tensor:
     """完整标定链：WB → CCM+Bias → Tone。输出未做 [0,1] 裁剪（由调用方决定，
     训练时保留端点外梯度更友好，推理时 clamp）。"""
     x = apply_wb(x, p.wb_log)
@@ -63,4 +63,4 @@ def apply_calibration(x: torch.Tensor, p: CameraParams) -> torch.Tensor:
     return x
 
 
-__all__ = ["CameraParams", "apply_wb", "apply_ccm_bias", "apply_tone", "apply_calibration"]
+__all__ = ["CameraParams", "apply_wb", "apply_ccm_bias", "apply_tone", "apply_learnable"]

@@ -339,7 +339,7 @@ def _evaluate_human(
     )
     # V3.1: Front ISP state in ckpt is loaded via generic
     # `len(state_dict()) > 0` below (learnable mode has params; identity/
-    # fixed do not), so no CalibratedFrontISP import is needed here.
+    # fixed do not), so no CalibratedFrontISP import is needed here (legacy name of LearnableFrontISP).
 
     hq_cfg = cfg.get('human_quality', {}) or {}
     fivek_root = hq_cfg.get('fivek_root', '/home/jing/datasets/fivek')

@@ -54,7 +54,7 @@ fatal — all samples get camera id 0.
 
 When `return_camera=True` (default) `__getitem__` returns
 `(image, target, camera_id)` and `collate_fivek` stacks a third `(B,)`
-long tensor. This feeds `front_isp.calibration.camera_specific`.
+long tensor. This feeds `front_isp.learnable (camera_specific)`.
 """
 from __future__ import annotations
 
@@ -120,7 +120,7 @@ class FiveKDataset(Dataset):
 
         # ---- V3.1 camera model tags: `<stem> → "<Make> <Model>"` ----
         # Sorted name list fixes the id ↔ name mapping; missing file → all
-        # ids 0 (not fatal — the calibration table stays single-camera).
+        # ids 0 (not fatal — the learnable table stays single-camera).
         if camera_json is None and cache_dir is not None:
             candidate = os.path.join(os.path.dirname(cache_dir), "camera.json")
             if os.path.exists(candidate):

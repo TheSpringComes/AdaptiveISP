@@ -127,10 +127,10 @@ RAW → Input Adapter (Dataset layer: Bayer reconstruction per per-file CFA patt
 |---|---|---|
 | `identity` | 不使用 Front ISP（对照组，旧名 `none`） | `front_isp/identity.py` |
 | `fixed` | 人工配置 ISP：WB / CCM / Bias / Gamma / Exposure / Smoothstep 等模块，顺序与参数全部由 `fixed.modules` 配置指定，训练不更新；模块注册表开放扩展 | `front_isp/fixed.py` |
-| `learnable` | 固定结构 + 可训练参数（WB gain / CCM / Bias / Gamma，camera-specific 参数表，旧名 `calibrated`）。**两阶段训练**：Stage 1 只训 Front ISP 并冻结；Stage 2 跑 AdaptiveISP。不联合训练 | `front_isp/calibration/` |
+| `learnable` | 固定结构 + 可训练参数（WB gain / CCM / Bias / Gamma，camera-specific 参数表，旧名 `calibrated`）。**两阶段训练**：Stage 1 只训 Front ISP 并冻结；Stage 2 跑 AdaptiveISP。不联合训练 | `front_isp/learnable/` |
 | `external` | 接入现有开源 ISP：`backend: infinite_isp \| samsung_isp`，wrapper 统一输入输出 | `front_isp/external.py` + wrappers |
 
-- **两阶段训练（learnable）**：Stage 1 `tools/train.py --task calibration`（loss = λ₁L1 + λ_s(1−SSIM) + λ_pLPIPS vs Expert C），保存 ckpt 并冻结；Stage 2 `--task human` 加载冻结的 Front ISP 跑 AdaptiveISP。不做联合训练，避免两部分同时变化后难以归因。
+- **两阶段训练（learnable）**：Stage 1 `tools/train.py --task learnable`（loss = λ₁L1 + λ_s(1−SSIM) + λ_pLPIPS vs Expert C），保存 ckpt 并冻结；Stage 2 `--task human` 加载冻结的 Front ISP 跑 AdaptiveISP。不做联合训练，避免两部分同时变化后难以归因。
 - **消融四路对比**：不用（`adaptiveisp_human.yaml` baseline）/ 人工固定（`v31_fixed.yaml`）/ 学习参数（`v31_stage2.yaml`）/ 开源 ISP（`v31_external.yaml`）。看两个问题：Front ISP 有没有帮助；基础色彩问题前置解决后 RL 是否更容易训练。
 
 ```bash
@@ -140,7 +140,7 @@ python tools/fivek_camera_metadata.py \
     --out      /home/jing/datasets/fivek/camera.json
 
 # Stage 1: learnable Front ISP pretrain (freeze after)
-python tools/train.py --task calibration \
+python tools/train.py --task learnable \
     --cfg configs/adaptiveisp_human_v31_pretrain.yaml \
     --save_path v31_stage1 --epochs 5 --batch_size 8
 

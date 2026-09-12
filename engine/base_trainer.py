@@ -138,7 +138,7 @@ class BaseTrainer:
 
     def _build_optimizer_and_scheduler(self, args, cfg):
         # V3.1 两阶段训练：Stage 2 的 optimizer 只含 Controller —— Front
-        # ISP 恒冻结（可学习参数在 Stage 1 由 CalibrationTrainer 训练，
+        # ISP 恒冻结（可学习参数在 Stage 1 由 LearnableTrainer 训练，
         # 不与 AdaptiveISP 联合）。
         groups = [{'params': self.controller.parameters(), 'lr': args.lr}]
         optim = torch.optim.Adam(groups)

@@ -1,7 +1,7 @@
-"""smoke: V3.1 Camera Calibration — module, camera table, gradient, stages.
+"""smoke: V3.1 Learnable Front ISP — module, camera table, gradient, stages.
 
 Covers:
-  - 'calibrated' registered; build via config
+  - 'learnable' registered; build via config (legacy 'calibrated' alias kept)
   - identity init is a true no-op on the image
   - camera-specific rows differ; metadata camera_id selects them
   - gradients flow into wb/ccm/bias/gamma (learnable) and stop when frozen
@@ -23,30 +23,29 @@ if _ROOT not in sys.path:
 import torch
 
 
-def test_calibration() -> None:
+def test_learnable() -> None:
     import front_isp as fi
-    from front_isp.calibration import CalibratedFrontISP
-    from front_isp.calibration.camera_params import CameraParamTable
-    from front_isp.calibration.fittedisp_loader import load_fittedisp_params
+    from front_isp.learnable import LearnableFrontISP
+    from front_isp.learnable.camera_params import CameraParamTable
+    from front_isp.learnable.fittedisp_loader import load_fittedisp_params
 
-    assert 'calibrated' in fi.list_front_isps()
+    assert 'learnable' in fi.list_front_isps()
+    assert 'calibrated' in fi.list_front_isps()   # legacy alias
     assert 'learnable' in fi.list_front_isps()   # V3.1 统一模式名
 
     # --- build via config (shared params) ---
-    m = fi.build_front_isp({'type': 'calibrated'})
-    assert isinstance(m, CalibratedFrontISP)
+    m = fi.build_front_isp({'type': 'learnable'})
+    assert isinstance(m, LearnableFrontISP)
     assert m.table.n_cameras == 1
 
-    # --- V3.1 统一模式名 learnable 等价（子键也用新名） ---
-    m2 = fi.build_front_isp({'type': 'learnable', 'learnable': {
+    # --- legacy 别名等价：旧 type 名 + 旧子键也可构建 ---
+    m2 = fi.build_front_isp({'type': 'calibrated', 'calibration': {
         'camera_specific': True, 'n_cameras': 2}})
-    assert isinstance(m2, CalibratedFrontISP) and m2.table.n_cameras == 2
-    with torch.no_grad():
-        m2.table.wb_log += 0.1
+    assert isinstance(m2, LearnableFrontISP) and m2.table.n_cameras == 2
     # 新旧子键混用也可（learnable 子键 + 旧 type 名）
     m3 = fi.build_front_isp({'type': 'calibrated', 'learnable': {
         'camera_specific': True, 'n_cameras': 2}})
-    assert isinstance(m3, CalibratedFrontISP) and m3.table.n_cameras == 2
+    assert isinstance(m3, LearnableFrontISP) and m3.table.n_cameras == 2
 
     x = torch.rand(2, 3, 16, 24)
     y = m(x)  # no metadata → row 0
@@ -55,7 +54,7 @@ def test_calibration() -> None:
     assert torch.allclose(y, x, atol=1e-6), "identity init changed the image"
 
     # --- camera-specific rows + metadata dispatch ---
-    m = fi.build_front_isp({'type': 'calibrated', 'calibration': {
+    m = fi.build_front_isp({'type': 'learnable', 'learnable': {
         'camera_specific': True, 'n_cameras': 3}})
     assert m.table.n_cameras == 3
     with torch.no_grad():
@@ -73,7 +72,7 @@ def test_calibration() -> None:
         m(xb, {'camera_id': torch.tensor([99, -3, 0])})
 
     # --- gradients flow into learnable params; freeze stops them ---
-    m = fi.build_front_isp({'type': 'calibrated'})
+    m = fi.build_front_isp({'type': 'learnable'})
     x = torch.rand(1, 3, 8, 8)
     out = m(x)
     out.sum().backward()
@@ -87,7 +86,7 @@ def test_calibration() -> None:
     assert not out.requires_grad, "frozen calibration should detach the graph"
 
     # --- learnable flags from config ---
-    m = fi.build_front_isp({'type': 'calibrated', 'calibration': {
+    m = fi.build_front_isp({'type': 'learnable', 'learnable': {
         'white_balance': {'learnable': False},
         'ccm': {'learnable': False},
         'bias': {'learnable': False},
@@ -107,27 +106,27 @@ def test_calibration() -> None:
     assert p['ccm'].shape == (3, 3) and p['bias'].shape == (3,)
 
     # fittedisp init via CameraParamTable
-    m = fi.build_front_isp({'type': 'calibrated', 'calibration': {
+    m = fi.build_front_isp({'type': 'learnable', 'learnable': {
         'init': {'type': 'fittedisp', 'params': {'wb': [1.1, 1, 0.9], 'gamma': 1.8}}}})
     x = torch.rand(1, 3, 8, 8)
     y = m(x)
     assert not torch.allclose(y, x)  # non-identity calibration applied
 
     # --- ckpt round-trip ---
-    m = fi.build_front_isp({'type': 'calibrated'})
+    m = fi.build_front_isp({'type': 'learnable'})
     with torch.no_grad():
         m.table.wb_log += 0.3
         m.table.log_gamma -= 0.2
     state = m.state_dict()
-    m2 = fi.build_front_isp({'type': 'calibrated'})
+    m2 = fi.build_front_isp({'type': 'learnable'})
     m2.load_state_dict(state)
     assert torch.allclose(m.table.wb_log, m2.table.wb_log)
 
-    # ckpt key style used by CalibrationTrainer ({"front_isp": state})
+    # ckpt key style used by LearnableTrainer ({"front_isp": state})
     with tempfile.TemporaryDirectory() as td:
         ck = os.path.join(td, 'CalibISP_iter_10.pth')
-        torch.save({'front_isp': state, 'task': 'calibration_pretrain'}, ck)
-        m3 = fi.build_front_isp({'type': 'calibrated', 'calibration': {'ckpt': ck}})
+        torch.save({'front_isp': state, 'task': 'learnable_pretrain'}, ck)
+        m3 = fi.build_front_isp({'type': 'learnable', 'learnable': {'ckpt': ck}})
         assert torch.allclose(m.table.wb_log, m3.table.wb_log)
 
     # fittedisp JSON file path
@@ -149,13 +148,13 @@ def test_calibration() -> None:
     # --- cfg-level build (front_isp dict on a run config) ---
     from engine.util import Dict
     from front_isp import build_front_isp_from_cfg
-    cfg = Dict({'front_isp': {'enabled': True, 'type': 'calibrated',
-                              'calibration': {'camera_specific': True,
+    cfg = Dict({'front_isp': {'enabled': True, 'type': 'learnable',
+                              'learnable': {'camera_specific': True,
                                               'n_cameras': 5}}})
     m = build_front_isp_from_cfg(cfg)
-    assert isinstance(m, CalibratedFrontISP) and m.table.n_cameras == 5
+    assert isinstance(m, LearnableFrontISP) and m.table.n_cameras == 5
 
 
 if __name__ == "__main__":
-    test_calibration()
-    print("smoke/test_calibration: PASS")
+    test_learnable()
+    print("smoke/test_learnable: PASS")

@@ -24,7 +24,7 @@ from typing import Any, Dict, Optional
 import torch
 import torch.nn as nn
 
-from front_isp.calibration.color_mapping import CameraParams
+from front_isp.learnable.color_mapping import CameraParams
 
 _PARAM_KEYS = ("wb", "ccm", "bias", "gamma")
 
@@ -56,7 +56,7 @@ class CameraParamTable(nn.Module):
             bias = torch.zeros(n_cameras, 3)
             log_gamma = torch.zeros(n_cameras, 1)             # gamma = 1
         else:  # fittedisp
-            from front_isp.calibration.fittedisp_loader import load_fittedisp_params
+            from front_isp.learnable.fittedisp_loader import load_fittedisp_params
             p = load_fittedisp_params(init_params or {})
             n = n_cameras
             wb = p["log_wb"].view(1, 3).repeat(n, 1)

@@ -1,4 +1,4 @@
-"""Learnable Front ISP — 可学习相机标定（V3.1 模式之三，`type: learnable`）。
+"""Learnable Front ISP — 可学习相机参数（V3.1 模式之三，`type: learnable`）。
 
 对应 config（旧名 `type: calibrated` + `calibration:` 子键仍可用）：
 
@@ -25,7 +25,7 @@
 （demosaic 在 Input Adapter 层完成，见 front_isp/raw_adapter.py。）
 全部参数支持梯度训练；camera_specific 时按 `metadata['camera_id']`
 索引 Camera Parameter Table。与 AdaptiveISP 的耦合只经由
-`process()` 的输入输出 — Controller/RL 侧不感知 calibration。
+`process()` 的输入输出 — Controller/RL 侧不感知 learnable 参数。
 """
 from __future__ import annotations
 
@@ -36,14 +36,14 @@ import os
 import torch
 
 from front_isp.base import FrontISPBase
-from front_isp.calibration.camera_params import CameraParamTable
-from front_isp.calibration.color_mapping import apply_calibration
+from front_isp.learnable.camera_params import CameraParamTable
+from front_isp.learnable.color_mapping import apply_learnable
 from front_isp.registry import register_front_isp
 
 
 @register_front_isp('learnable')
 @register_front_isp('calibrated')
-class CalibratedFrontISP(FrontISPBase):
+class LearnableFrontISP(FrontISPBase):
     """可学习相机标定 Front ISP（V3.1 模式之三，`type: learnable`）。
 
     旧名 `type: calibrated` 仍可用（同一实现，等价别名）。
@@ -84,7 +84,7 @@ class CalibratedFrontISP(FrontISPBase):
         self.table.set_learnable(wb=_lr('white_balance'), ccm=_lr('ccm'),
                                  bias=_lr('bias'), tone=_lr('tone'))
 
-        # Stage 1 预训练结果加载（CalibrationTrainer 的 ckpt 含
+        # Stage 1 预训练结果加载（LearnableTrainer 的 ckpt 含
         # 'front_isp' state_dict）。init.params (JSON) 与 init.ckpt (pth)
         # 二选一；ckpt 优先级更低，作为 V3.1-B 的标准入口。
         # ckpt 文件不存在时给出可操作的警告并继续用 init（Stage-1 尚未
@@ -130,7 +130,7 @@ class CalibratedFrontISP(FrontISPBase):
         if isinstance(metadata, dict):
             cam_id = metadata.get('camera_id')
         params = self.table(cam_id)
-        out = apply_calibration(image, params)
+        out = apply_learnable(image, params)
         # 推理语义下裁回 [0,1]；训练时梯度在端点外为 0，可接受。
         return out.clamp(0.0, 1.0)
 
@@ -147,8 +147,11 @@ class CalibratedFrontISP(FrontISPBase):
         return [p for p in self.parameters() if p.requires_grad]
 
     def __repr__(self) -> str:
-        return (f"CalibratedFrontISP(camera_specific={self.camera_specific}, "
+        return (f"LearnableFrontISP(camera_specific={self.camera_specific}, "
                 f"table={self.table!r})")
 
 
-__all__ = ["CalibratedFrontISP"]
+__all__ = ["LearnableFrontISP", "CalibratedFrontISP"]
+
+# legacy 别名（V3.1 前的旧类名）
+CalibratedFrontISP = LearnableFrontISP

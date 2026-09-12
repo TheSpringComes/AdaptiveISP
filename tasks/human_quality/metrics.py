@@ -61,7 +61,7 @@ def lpips_batch(pred: torch.Tensor, target: torch.Tensor, net: str = "alex",
 
     LPIPS internally expects `[-1, 1]` — the wrapper below shifts. By
     default the call runs under `no_grad` (frozen network, scalar reward);
-    pass `grad=True` when LPIPS is a *training* term (V3.1 calibration
+    pass `grad=True` when LPIPS is a *training* term (V3.1 learnable
     pretraining) — the input graph is preserved while the LPIPS weights
     themselves stay frozen.
     """

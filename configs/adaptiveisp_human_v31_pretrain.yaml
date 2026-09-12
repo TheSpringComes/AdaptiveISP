@@ -1,4 +1,4 @@
-# V3.1 Stage 1 — learnable Front ISP 预训练（CalibrationTrainer）。
+# V3.1 Stage 1 — learnable Front ISP 预训练（LearnableTrainer）。
 #
 # 关闭 AdaptiveISP，只训练 Front ISP 的可学习参数：
 #     RAW → Front ISP(WB, CCM, Bias, Tone) → Base RGB
@@ -6,7 +6,7 @@
 # 损失：L_calib = λ1·L1 + λs·(1-SSIM) + λp·LPIPS
 #
 # 用法：
-#   python tools/train.py --task calibration \
+#   python tools/train.py --task learnable \
 #       --cfg configs/adaptiveisp_human_v31_pretrain.yaml \
 #       --save_path v31_stage1 --epochs 5 --batch_size 8
 #
@@ -15,7 +15,7 @@
 #
 # 小规模验证：加 --max_iters 40（配合 save_model_freq: 20）。
 
-operators:   # CalibrationTrainer 不用算子，但 load_config 需要
+operators:   # LearnableTrainer 不用算子，但 load_config 需要
   - exposure
   - gamma
 

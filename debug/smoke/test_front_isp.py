@@ -118,13 +118,13 @@ def test_front_isp() -> None:
             pass
 
     # --- learnable 别名：new type name 与旧名等价 ---
-    from front_isp.calibration import CalibratedFrontISP
+    from front_isp.learnable import LearnableFrontISP, CalibratedFrontISP
     m_new = fi.build_front_isp({'type': 'learnable', 'learnable': {
         'camera_specific': True, 'n_cameras': 3}})
     m_old = fi.build_front_isp({'type': 'calibrated', 'calibration': {
         'camera_specific': True, 'n_cameras': 3}})
-    assert isinstance(m_new, CalibratedFrontISP) and m_new.table.n_cameras == 3
-    assert isinstance(m_old, CalibratedFrontISP) and m_old.table.n_cameras == 3
+    assert isinstance(m_new, LearnableFrontISP) and m_new.table.n_cameras == 3
+    assert isinstance(m_old, LearnableFrontISP) and m_old.table.n_cameras == 3
 
     # --- canonical: shape / range / non-trivial ---
     canonical = fi.build_front_isp({'type': 'canonical'})
@@ -159,11 +159,11 @@ def test_front_isp() -> None:
     assert isinstance(fi.build_front_isp_from_cfg(cfg), IdentityFrontISP)
     cfg = load_config('configs/adaptiveisp_human_v31_pretrain.yaml')
     m = fi.build_front_isp_from_cfg(cfg)
-    assert isinstance(m, CalibratedFrontISP) and m.table.n_cameras == 24
+    assert isinstance(m, LearnableFrontISP) and m.table.n_cameras == 24
     cfg = load_config('configs/adaptiveisp_human_v31_fixed.yaml')
     assert isinstance(fi.build_front_isp_from_cfg(cfg), FixedFrontISP)
     cfg = load_config('configs/adaptiveisp_human_v31_stage2.yaml')
-    assert isinstance(fi.build_front_isp_from_cfg(cfg), CalibratedFrontISP)
+    assert isinstance(fi.build_front_isp_from_cfg(cfg), LearnableFrontISP)
     cfg = load_config('configs/adaptiveisp_human_v31_external.yaml')
     # external 配置构建会因第三方仓库缺失而报可操作错误 — 只验证类型名
     try:

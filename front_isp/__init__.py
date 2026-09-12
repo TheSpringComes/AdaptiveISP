@@ -16,7 +16,7 @@ ISP 之后的算子选择与参数优化。
                 全部由配置指定，训练时不更新。模块注册表开放扩展
                 （加 denoise/sharpen/contrast = 注册一个函数即可）。
     learnable — 固定结构 + 部分参数可训练（WB gain / CCM / Bias / Gamma）。
-                两阶段训练：Stage 1 只训 Front ISP（CalibrationTrainer，
+                两阶段训练：Stage 1 只训 Front ISP（LearnableTrainer，
                 FiveK Input → Expert C），保存并冻结；Stage 2 运行
                 AdaptiveISP 训练（HumanTrainer），Front ISP 输出作为 RL
                 初始图像。不与 AdaptiveISP 联合训练。
@@ -43,7 +43,7 @@ from front_isp.registry import (
 from front_isp.identity import IdentityFrontISP                    # noqa: F401
 from front_isp.fixed import FixedFrontISP                         # noqa: F401
 from front_isp.canonical import CanonicalBackbone                 # noqa: F401
-from front_isp.calibration import CalibratedFrontISP               # noqa: F401
+from front_isp.learnable import LearnableFrontISP, CalibratedFrontISP  # noqa: F401
 from front_isp.external import ExternalFrontISP                   # noqa: F401
 from front_isp.infinite_isp import InfiniteISPFront               # noqa: F401
 from front_isp.modular_neural_isp import ModularNeuralISPFront     # noqa: F401
@@ -52,14 +52,14 @@ from front_isp.modular_neural_isp import ModularNeuralISPFront     # noqa: F401
 def build_front_isp_from_cfg(cfg) -> FrontISPBase:
     """从主运行配置构建 Front ISP。
 
-    优先读 `cfg.front_isp`（新接口，见 Pipeline 扩展方案 2.2）：
+    优先读 `cfg.front_isp`（V3.1 统一四种模式）：
 
         front_isp:
           enabled: true
-          type: canonical          # none | canonical | infinite_isp | modular_neural_isp
-          canonical: {}            # 各类型自己的内部配置
-          infinite_isp:
-            config_path: configs/front_isp/infinite.yaml
+          type: learnable          # identity | fixed | learnable | external
+          learnable: {}            # 各类型自己的内部配置
+          external:
+            backend: infinite_isp  # infinite_isp | samsung_isp
 
     向后兼容：`front_isp` 段缺席时回落到 V3-A1 的 legacy 键
     `canonical_backbone.enabled`（true → canonical，false → identity），
@@ -79,6 +79,7 @@ __all__ = [
     "IdentityFrontISP",
     "FixedFrontISP",
     "CanonicalBackbone",
+    "LearnableFrontISP",
     "CalibratedFrontISP",
     "ExternalFrontISP",
     "InfiniteISPFront",

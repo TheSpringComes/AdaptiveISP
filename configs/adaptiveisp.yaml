@@ -67,7 +67,7 @@ filter_runtime_penalty_lambda: 0.01
 #               见 front_isp/fixed.py）
 #   learnable — 固定结构 + 可训练参数（WB gain / CCM / Bias / Gamma，
 #               camera-specific 参数表）。两阶段训练：Stage 1 只训
-#               Front ISP（--task calibration，见
+#               Front ISP（--task learnable，见
 #               configs/adaptiveisp_human_v31_pretrain.yaml），冻结后
 #               Stage 2 跑 AdaptiveISP（v31_stage2.yaml）。
 #               旧名 calibrated。

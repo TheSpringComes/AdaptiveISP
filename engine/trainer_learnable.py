@@ -1,19 +1,18 @@
-"""CalibrationTrainer: V3.1 Stage 1 — calibration 预训练。
+"""LearnableTrainer: V3.1 Stage 1 — learnable Front ISP 预训练。
 
 关闭 AdaptiveISP（不构建 Controller/Executor），只训练 Front ISP 的
-标定参数：
+可学习参数：
 
-    RAW → Calibration(WB, CCM, Bias, Tone) → Base RGB
+    RAW → LearnableISP(WB, CCM, Bias, Tone) → Base RGB
                                         ↘ L_calib vs Expert C
 
 损失（V3.1 §4 Stage 1）：
 
     L_calib = λ1·L1 + λs·(1 - SSIM) + λp·LPIPS
 
-由 `training:` 配置段驱动（calibration_pretrain），入口为
-`tools/train.py --task calibration`。保存的 ckpt 含标定 state_dict 与
-camera 名单，Stage 2 通过 `front_isp.calibration.init.params` 复用，
-Stage 3 在其基础上联合微调。
+由 `training:` 配置段驱动（learnable pretrain），入口为
+`tools/train.py --task learnable`。保存的 ckpt 含 learnable state_dict 与
+camera 名单，Stage 2（v31_stage2.yaml）构建时加载并冻结。
 """
 from __future__ import annotations
 
@@ -26,7 +25,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from engine.base_trainer import BaseTrainer
-from front_isp.calibration import CalibratedFrontISP
+from front_isp.learnable import LearnableFrontISP
 from tasks.human_quality import (
     FiveKDataset, HumanQualityTask, collate_fivek,
     lpips_batch, psnr_batch, delta_e_batch,
@@ -39,11 +38,11 @@ if not logger.hasHandlers():
                         format='%(asctime)s %(name)s %(levelname)s: %(message)s')
 
 
-class CalibrationTrainer(BaseTrainer):
-    """Assembles Front ISP (calibrated) + FiveK loader + L_calib loop."""
+class LearnableTrainer(BaseTrainer):
+    """Assembles Front ISP (learnable) + FiveK loader + L_calib loop."""
 
-    banner = ("CalibrationTrainer begin....\n"
-              "------- V3.1 Stage 1: RAW → Calibration → Base RGB vs Expert C ---------")
+    banner = ("LearnableTrainer begin....\n"
+              "------- V3.1 Stage 1: RAW → LearnableISP → Base RGB vs Expert C ---------")
     ckpt_prefix = "CalibISP"
 
     def __init__(self, args, task: str = "train") -> None:
@@ -79,7 +78,7 @@ class CalibrationTrainer(BaseTrainer):
         fi_cfg = cfg.get('front_isp', {}) or {}
         if fi_cfg.get('type') not in ('learnable', 'calibrated'):
             raise SystemExit(
-                "CalibrationTrainer 需要 front_isp.type == learnable，"
+                "LearnableTrainer 需要 front_isp.type == learnable，"
                 f"得到 {fi_cfg.get('type', 'none')!r}。请使用 V3.1 预训练 config。"
             )
         calib_cfg = ((fi_cfg.get('learnable', {}) or {})
@@ -89,12 +88,12 @@ class CalibrationTrainer(BaseTrainer):
                                          self.val_dataset.n_cameras)
         from front_isp import build_front_isp
         self.front_isp = build_front_isp(fi_cfg).to(self.device)
-        if not isinstance(self.front_isp, CalibratedFrontISP):
+        if not isinstance(self.front_isp, LearnableFrontISP):
             raise SystemExit(f"front_isp 解析为 {type(self.front_isp).__name__}，"
-                             "CalibrationTrainer 只接受 CalibratedFrontISP。")
+                             "LearnableTrainer 只接受 LearnableFrontISP。")
         n_learn = len(self.front_isp.trainable_parameters())
         if n_learn == 0:
-            raise SystemExit("标定参数全部被冻结（learnable 全 false），无可训练项。")
+            raise SystemExit("可学习参数全部被冻结（learnable 全 false），无可训练项。")
 
         # --- LPIPS/SSIM via the task metric stack ---
         t_cfg = cfg.get('training', {}) or {}
@@ -111,7 +110,7 @@ class CalibrationTrainer(BaseTrainer):
         self._finalize_cfg_derived_fields(args, cfg)
         self.cfg = cfg
 
-        print(f"CalibrationTrainer: cameras={self.front_isp.table.n_cameras} "
+        print(f"LearnableTrainer: cameras={self.front_isp.table.n_cameras} "
               f"({self.train_dataset.n_cameras} in train split), "
               f"learnable tensors={n_learn}")
         print(f"  loss = {self.lambda_l1}·L1 + {self.lambda_ssim}·(1-SSIM) "
@@ -120,7 +119,7 @@ class CalibrationTrainer(BaseTrainer):
     # ---------------- helpers ----------------
 
     def _save_ckpt(self, iter_idx: int, optim, extra=None) -> None:
-        """Override: no Controller to save — ckpt 只含标定 state 与相机表。"""
+        """Override: no Controller to save — ckpt 只含 learnable state 与相机表。"""
         ckpt = {
             'iter': iter_idx,
             'optimizer': optim.state_dict(),
@@ -153,7 +152,7 @@ class CalibrationTrainer(BaseTrainer):
     # ---------------- train loop ----------------
 
     def train(self) -> None:
-        self._maybe_resume_calibration(self.args.resume)
+        self._maybe_resume_learnable(self.args.resume)
 
         params = self.front_isp.trainable_parameters()
         optim = torch.optim.Adam(params, lr=self.args.lr)
@@ -204,15 +203,15 @@ class CalibrationTrainer(BaseTrainer):
 
             if it % self.cfg.save_model_freq == 0 or it == max_iter_step:
                 self._save_ckpt(it, optim,
-                                extra={'task': 'calibration_pretrain'})
+                                extra={'task': 'learnable pretrain'})
 
         self._run_val(step=max_iter_step)
         torch.cuda.empty_cache()
 
-    def _maybe_resume_calibration(self, resume_path) -> None:
+    def _maybe_resume_learnable(self, resume_path) -> None:
         if not resume_path:
             return
-        print(f"Resume calibration from {resume_path}")
+        print(f"Resume learnable front ISP from {resume_path}")
         ckpt = torch.load(resume_path, map_location='cpu', weights_only=False)
         state = ckpt.get('front_isp', ckpt)
         self.front_isp.load_state_dict(state)
@@ -254,4 +253,8 @@ class CalibrationTrainer(BaseTrainer):
         return metrics
 
 
-__all__ = ["CalibrationTrainer"]
+__all__ = ["LearnableTrainer"]
+
+
+# legacy 别名（V3.1 前的旧类名）
+CalibrationTrainer = LearnableTrainer

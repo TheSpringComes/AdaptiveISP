@@ -29,9 +29,10 @@ if _ROOT not in sys.path:
 
 def _add_shared_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--task", type=str, default="detection",
-                   choices=["detection", "human", "calibration"],
+                   choices=["detection", "human", "learnable", "calibration"],
                    help="downstream task; picks the trainer subclass "
-                        "(calibration = V3.1 Stage 1 calibration pretrain)")
+                        "(learnable = Stage 1 learnable Front ISP pretrain; "
+                        "calibration 是旧名别名)")
     p.add_argument("--mode", type=str, default="train_val",
                    choices=["train", "train_val"],
                    help="train, or train and val (val-mode mAP eval lives in tools/val.py)")
@@ -98,12 +99,12 @@ def _run_detection(args) -> None:
     trainer.train()
 
 
-def _run_calibration(args) -> None:
-    """V3.1 Stage 1: train only the Front ISP calibration params."""
+def _run_learnable(args) -> None:
+    """V3.1 Stage 1: train only the learnable Front ISP params."""
     import isp  # noqa: F401
 
-    from engine.trainer_calibration import CalibrationTrainer
-    trainer = CalibrationTrainer(args, task="train")
+    from engine.trainer_learnable import LearnableTrainer
+    trainer = LearnableTrainer(args, task="train")
     trainer.train()
 
 
@@ -123,8 +124,10 @@ def main() -> None:
         _run_detection(args)
     elif args.task == "human":
         _run_human(args)
-    elif args.task == "calibration":
-        _run_calibration(args)
+    elif args.task == "learnable":
+        _run_learnable(args)
+    elif args.task == "calibration":      # legacy 别名
+        _run_learnable(args)
     else:
         raise ValueError(f"unknown --task: {args.task!r}")
 

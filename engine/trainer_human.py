@@ -104,7 +104,7 @@ class HumanTrainer(BaseTrainer):
 
         # V3.1 两阶段训练：本 trainer 即 Stage 2 —— Front ISP（无论何种
         # 模式）恒为冻结，只做前向；可学习参数只在 Stage 1
-        # （CalibrationTrainer）训练，不与 AdaptiveISP 联合训练。
+        # （LearnableTrainer）训练，不与 AdaptiveISP 联合训练。
         self.front_isp.eval()
         for p in self.front_isp.parameters():
             p.requires_grad_(False)

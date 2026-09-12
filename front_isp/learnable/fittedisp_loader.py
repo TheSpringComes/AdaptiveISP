@@ -3,8 +3,8 @@
 对应 config：
 
     front_isp:
-      type: calibrated
-      calibration:
+      type: learnable
+      learnable:
         init:
           type: fittedisp
           params: params.json

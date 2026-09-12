@@ -35,7 +35,7 @@ FIXED_CFG=configs/adaptiveisp_human_v31_fixed.yaml
 echo "================================================================"
 echo "[1/4] learnable Front ISP Stage 1 — pretrain (calibration)"
 echo "================================================================"
-python -u tools/train.py --task calibration \
+python -u tools/train.py --task learnable \
     --cfg "$CALIB_CFG" --save_path v31_stage1 \
     --epochs "$E1" --batch_size 8 "${EXTRA[@]}"
 
