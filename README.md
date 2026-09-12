@@ -62,7 +62,7 @@ in one shot — see [Evaluation](#evaluation) below.
 
 V3 introduces three structural improvements to the search space and training algorithm:
 
-**A1: Canonical Backbone.** A fixed ISP pipeline (AWB → CCM → GTM → Gamma) runs before the Controller, providing a reliable baseline RGB image. This reduces the search space from "RAW → task-optimized RGB" to "baseline RGB → task-optimized RGB", making the RL problem more tractable. Implemented in `pipeline/backbone.py`, controlled by `canonical_backbone.enabled` in config.
+**A1: Canonical Backbone.** A fixed ISP pipeline (AWB → CCM → GTM → Gamma) runs before the Controller, providing a reliable baseline RGB image. This reduces the search space from "RAW → task-optimized RGB" to "baseline RGB → task-optimized RGB", making the RL problem more tractable. Implemented in `front_isp/canonical.py` (legacy `canonical_backbone.enabled` in config still works; V3.1 supersedes it with the four-mode Front ISP, see below).
 
 **A2: Action Mask.** Dynamic constraints on the Controller's action space:
 - **No-repeat mask**: prevents selecting the same operator twice in a rollout
@@ -100,9 +100,6 @@ bash scripts/run_v3_human_ablation.sh
 
 # H3-s5 variants (test_steps=5, lr/reward tuning)
 bash scripts/run_v3_human_s5_variants.sh
-
-# Generate comparison visualizations
-python tools/v3_summary_viz.py
 ```
 
 Configs:
@@ -163,8 +160,15 @@ isp/
 ├─ operators/infinite_isp/      9 Infinite-ISP-derived (Torch-native)
 ├─ learned/samsung_modular/     7 Samsung Modular Neural ISP wrappers
 └─ third_party/modular_neural_isp/    gitignored; 172 MB Samsung code
+front_isp/                      V3.1 可插拔前置 ISP（四种统一模式）
+├─ identity.py                  identity（对照组，旧名 none）
+├─ fixed.py                     fixed：配置驱动模块链 + 开放模块注册表
+├─ learnable/                   learnable：可训练 WB/CCM/Bias/Gamma（两阶段训练）
+├─ canonical.py                 legacy 固定链（V3-A1）
+├─ external.py                  external：backend 分发（infinite_isp | samsung_isp）
+└─ raw_adapter.py               Input Adapter：Bayer 重建 → demosaic → linear RGB
 controller/adaptiveisp/         Controller + STOP head + Reward + HumanReward + PPO
-pipeline/                       PipelineState (op_usage: int64) + Executor + Backbone + TrajectoryBuffer
+pipeline/                       PipelineState (op_usage: int64) + Executor + TrajectoryBuffer
 search/
 ├─ space.py                     SearchSpace (composes priors)
 └─ priors/action_mask.py        NoRepeatMask, OrderMask, GroupBudgetMask
@@ -174,21 +178,28 @@ tasks/
 └─ third_party/yolov3/          vendored
 engine/
 ├─ trainer.py                   Detection (1-iter-1-step + ReplayMemory, or PPO)
-├─ trainer_human.py             Human (full T-step rollout per iter, or PPO)
+├─ trainer_human.py             Human Stage 2 (full T-step rollout per iter, or PPO)
+├─ trainer_learnable.py         Human Stage 1 (learnable Front ISP pretrain)
 └─ evaluator.py                 mAP + auto-viz
-configs/                        adaptiveisp.yaml (main) + V3 ablation variants
+configs/                        adaptiveisp.yaml (main) + V3/V3.1 ablation variants
 tools/
-├─ train.py                     training CLI (`--task {detection,human}`)
+├─ train.py                     training CLI (`--task {detection,human,learnable}`)
 ├─ val.py                       mAP + auto-viz CLI
-├─ visualization/visualizer.py  standalone canary tool
-└─ v3_summary_viz.py            V3 ablation comparison figure generator
+├─ fivek_build_cache.py         Expert-C cache build（4-plane pack）
+├─ fivek_cfa_scan.py            全量 DNG CFA pattern 扫描
+├─ verify_raw_adapter.py        Input Adapter 验证套件（rawpy 真值对拍）
+├─ vis_val_color.py             颜色链路 4 格诊断可视化
+├─ preview.py                   单样本 Front ISP 对比预览
+└─ visualization/visualizer.py  standalone canary tool
 scripts/
 ├─ run_ablations.sh             V2 ablation orchestrator
 ├─ run_v3_ablation.sh           V3 Detection ablation ladder
 ├─ run_v3_human_ablation.sh     V3 Human ablation ladder
 ├─ run_v3_human_s5_variants.sh  H3-s5 variant sweep
+├─ run_v31_ablation.sh          V3.1 Front ISP 四模式消融（支持 --smoke）
 └─ val_v3_ablation.sh           V3 val runner
-debug/smoke/                    5 smoke tests (imports, ops, pipeline, controller, e2e)
+debug/smoke/                    8 smoke tests (imports, ops, pipeline, front_isp,
+                                learnable, controller, e2e, human_quality e2e)
 docs/V1DESIGN.md                V1 architecture doc
 ```
 
@@ -216,6 +227,22 @@ correlation is below 0.5 — legacy TIFF/DNG mismatches) and files absent from
 the cache (42 X-Trans / mirrored-flip images skipped at build). Current
 counts: train 4818/4894, val 97/100, 35 cameras (`camera.json`).
 
+**CFA pattern metadata.** The cache packs planes by color code, so the 2×2
+CFA arrangement per file is needed at load time for Bayer reconstruction:
+
+```bash
+# 全量 DNG pattern 扫描 → /home/jing/datasets/fivek/cfa_pattern.json
+python tools/fivek_cfa_scan.py
+# FiveK 实测分布（5000 DNG）：RGGB 3715 / BGGR 675 / GBRG 451 / GRBG 111
+```
+
+At load time the Input Adapter (`front_isp/raw_adapter.py`) reconstructs the
+full-resolution mosaic per the file's true pattern, then demosaics
+(0.5×Malvar + 0.5×Bilinear) into canonical linear RGB — so `FiveKDataset`
+returns **full-resolution** `(3, H, W)` linear image paired with the
+full-res sRGB target. See `tools/verify_raw_adapter.py` for the validation
+suite (17/17 checks incl. rawpy ground-truth comparison per pattern).
+
 ⚠️ All pre-rebuild experiments (v2ai_*, v3_h*, lod-*, v31_*) were trained on
 the misaligned cache and live in `experiments_archive_polluted_data/` /
 `experiments/` — their numbers are not comparable to new-data runs.
@@ -239,8 +266,9 @@ or [OneDrive](https://1drv.ms/u/s!Aq1PSygduHX9czHB9WkUNUTUx8o?e=KURDwo),
 unzip, set `path:` in `tasks/third_party/yolov3/data/lod.yaml`.
 
 **FiveK + Expert C (Human Quality).** Sample lists at
-`<fivek_root>/{train,val}_expert_c.txt` referencing `.npz` Bayer4-packed
-frames. Path is set via `human_quality.fivek_root` in the config yaml
+`<fivek_root>/{train,val}_expert_c.txt` referencing `.npz` frames
+(Bayer4-packed raw + full-res Expert-C sRGB target). Path is set via
+`human_quality.fivek_root` in the config yaml
 (defaults to `/home/jing/datasets/fivek`).
 
 **Samsung Modular Neural ISP (Neural operators).** Vendored under
