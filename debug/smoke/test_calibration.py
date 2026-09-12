@@ -95,14 +95,6 @@ def test_calibration() -> None:
     }})
     assert m.trainable_parameters() == []
 
-    # --- demosaic learnable must be rejected (V3.1: fixed) ---
-    try:
-        fi.build_front_isp({'type': 'calibrated', 'calibration': {
-            'demosaic': {'learnable': True}}})
-        raise AssertionError("expected ValueError")
-    except ValueError:
-        pass
-
     # --- fittedisp loader: inline dict ---
     p = load_fittedisp_params({'params': {'wb_gain': [1.1, 1.0, 0.9],
                                            'color_matrix': [[1.0, 0.1, 0.0],

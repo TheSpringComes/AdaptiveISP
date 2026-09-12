@@ -153,7 +153,6 @@ class CalibrationTrainer(BaseTrainer):
     # ---------------- train loop ----------------
 
     def train(self) -> None:
-        from front_isp.calibration.fittedisp_loader import load_fittedisp_params  # noqa: F401
         self._maybe_resume_calibration(self.args.resume)
 
         params = self.front_isp.trainable_parameters()

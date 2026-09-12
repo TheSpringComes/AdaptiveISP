@@ -1,10 +1,11 @@
 """Canonical Front ISP — fixed, Infinite-ISP-style RAW-linear -> baseline sRGB.
 
-原 `pipeline/backbone.py` 的 `CanonicalBackbone`（V3-A1 阶段 1）迁移而来，
-注册为 `front_isp: {type: canonical}`。在 Controller 看到图像之前运行一个
-*固定的* ISP，使其从 "reasonable baseline sRGB" 而非 raw-linear camera
-空间开始。这是 Infinite-ISP 色彩链的 RGB-native 子集 — 无 demosaic、
-无坏点校正：demosaic 由 Input Adapter（`front_isp/raw_adapter.py`，
+V3-A1 阶段 1 的固定 ISP（历史上位于 `pipeline/backbone.py`，已迁移至
+`front_isp/canonical.py`），注册为 legacy 类型 `front_isp:
+{type: canonical}`。在 Controller 看到图像之前运行一个*固定的* ISP，
+使其从 "reasonable baseline sRGB" 而非 raw-linear camera 空间开始。
+这是 Infinite-ISP 色彩链的 RGB-native 子集 — 无 demosaic、无坏点校正：
+demosaic 由 Input Adapter（`front_isp/raw_adapter.py`，
 0.5*Malvar + 0.5*Bilinear）在数据层完成，本链全程工作在非 mosaic
 的 3 通道 linear RGB 上。
 
@@ -44,8 +45,8 @@ class CanonicalBackbone(FrontISPBase):
     Input:  (B, 3, H, W) float in [0, 1] — simulated linear-camera RGB
     Output: (B, 3, H, W) float in [0, 1] — baseline sRGB
 
-    All stages are non-parametric. 保留类名 `CanonicalBackbone` 以兼容旧的
-    `pipeline.CanonicalBackbone` 导入（`pipeline/backbone.py` 现为 re-export）。
+    All stages are non-parametric（V3.1 后等价能力也可用 `type: fixed`
+    的模块链表达，见 front_isp/fixed.py）。
     """
 
     def __init__(self, config=None) -> None:

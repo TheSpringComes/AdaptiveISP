@@ -1,16 +1,13 @@
-"""Calibrated Front ISP — learnable camera calibration（V3.1 §1–§3）。
+"""Learnable Front ISP — 可学习相机标定（V3.1 模式之三，`type: learnable`）。
 
-对应 config：
+对应 config（旧名 `type: calibrated` + `calibration:` 子键仍可用）：
 
     front_isp:
       enabled: true
-      type: calibrated
-      calibration:
+      type: learnable
+      learnable:
         camera_specific: true
         n_cameras: 24            # camera_specific 时需要；训练侧会自动注入
-        demosaic:
-          type: malvar_bilinear  # 暂固定（Input Adapter 层已完成），仅记录
-          learnable: false
         white_balance: {learnable: true}
         ccm:          {learnable: true}
         bias:         {learnable: true}
@@ -18,12 +15,14 @@
         init:
           type: fittedisp        # identity | fittedisp | camera_specific
           params: params.json
+        ckpt: <Stage-1 CalibISP ckpt>  # 两阶段训练：Stage 2 构建时加载并冻结
 
 前向（V3.1 §1）：
 
-    I_base = f_calib(RAW; θ_c),   θ_c = {WB, M, b, γ}
+    I_base = f_calib(RGB; θ_c),   θ_c = {WB, M, b, γ}
 
-顺序：Demosaic(固定) → WB/Channel Gain → CCM+Bias → Base Tone。
+顺序：WB/Channel Gain → CCM+Bias → Base Tone。
+（demosaic 在 Input Adapter 层完成，见 front_isp/raw_adapter.py。）
 全部参数支持梯度训练；camera_specific 时按 `metadata['camera_id']`
 索引 Camera Parameter Table。与 AdaptiveISP 的耦合只经由
 `process()` 的输入输出 — Controller/RL 侧不感知 calibration。
@@ -66,15 +65,10 @@ class CalibratedFrontISP(FrontISPBase):
         if not self.camera_specific:
             n_cameras = 1
 
-        # Demosaic：V3.1 暂固定。demosaic 发生在 Input Adapter 层
+        # 注：demosaic 不在这里——它在 Input Adapter 层完成
         # （front_isp/raw_adapter.py：Bayer 重建 → 0.5*Malvar +
-        # 0.5*Bilinear → canonical linear RGB），ISP 收到的已是 3 通道
-        # RGB，因此这里只记录配置，不再做 mosaic 处理；learnable 必须
-        # 为 false。
-        dm = calib.get('demosaic', {}) or {}
-        self.demosaic_type = str(dm.get('type', 'malvar_bilinear'))
-        if bool(dm.get('learnable', False)):
-            raise ValueError("V3.1: demosaic 暂为固定级，不支持 learnable: true")
+        # 0.5*Bilinear → canonical linear RGB），本模块收到的已是
+        # 3 通道 linear RGB。
 
         # 初始化（identity | fittedisp | camera_specific）。
         init = calib.get('init', {}) or {}
@@ -149,16 +143,12 @@ class CalibratedFrontISP(FrontISPBase):
             p.requires_grad_(False)
 
     def trainable_parameters(self) -> list:
-        """Stage 1/3（calibration_pretrain / joint_finetune）：可训练参数。"""
+        """Stage 1（calibration_pretrain）：可训练参数。"""
         return [p for p in self.parameters() if p.requires_grad]
-
-    def load_calibrated_state(self, state: Dict[str, Any]) -> None:
-        """加载 ckpt 中保存的标定参数（按 state_dict 键名宽松匹配）。"""
-        self.load_state_dict(state)
 
     def __repr__(self) -> str:
         return (f"CalibratedFrontISP(camera_specific={self.camera_specific}, "
-                f"demosaic={self.demosaic_type}(fixed), table={self.table!r})")
+                f"table={self.table!r})")
 
 
 __all__ = ["CalibratedFrontISP"]
