@@ -55,12 +55,38 @@ filters_runtime: [1.7, 2.0, 1.9, 6.3, 10.0, 2.7, 2.1, 2.0, 1.9, 1.7,
 filter_runtime_penalty: false            # overridden by --runtime_penalty
 filter_runtime_penalty_lambda: 0.01
 
-# ---------- Canonical Backbone (V3-A1 阶段 1) ----------
-# When enabled, a fixed Infinite-ISP-style pipeline runs BEFORE the Controller
-# on every fresh sample, producing baseline sRGB from simulated linear-cam RGB.
-# Stages (all fixed, no learnable params):
-#   gray-world AWB → calibrated cam2rgb CCM → smoothstep GTM → sRGB gamma
-# See `pipeline/backbone.py`. Default off = V2 behavior (E0 baseline).
+# ---------- Front ISP (可插拔前置 ISP) ----------
+# RAW → Front ISP → Baseline RGB → AdaptiveISP(Adaptive Tail) → Task。
+# Front ISP 负责产生稳定的基础成像结果；Adaptive Tail 只做增量式优化。
+#
+# type:
+#   none               — 不做前置处理（V2 / E0 parity，等同 enabled: false）
+#   canonical          — V3-A1 固定 4 阶段 ISP：gray-world AWB → 校准
+#                        cam2rgb CCM → smoothstep GTM → sRGB gamma
+#                        （见 front_isp/canonical.py，无 learnable 参数）
+#   calibrated         — V3.1 可学习相机标定：Demosaic(固定) → WB → CCM+Bias
+#                        → Tone；camera-specific 参数表，三阶段训练
+#                        （见 front_isp/calibration/，config 见
+#                        configs/adaptiveisp_human_v31_pretrain.yaml）
+#   infinite_isp       — 10x-Engineers Infinite-ISP wrapper（需本地 clone，
+#                        见 front_isp/infinite_isp/wrapper.py）
+#   modular_neural_isp — SamsungLabs modular_neural_isp wrapper（需本地 clone，
+#                        分阶段配置，见 front_isp/modular_neural_isp/wrapper.py）
+#
+# 每套 Front ISP 保留自己的内部配置（不抹平其可配置能力）：
+#   front_isp:
+#     enabled: true
+#     type: infinite_isp
+#     infinite_isp:
+#       repo_path: third_party/Infinite-ISP
+#       config_path: configs/front_isp/infinite.yaml
+front_isp:
+  enabled: false
+  type: none
+  canonical: {}
+
+# Legacy V3-A1 key（向后兼容）：`front_isp:` 段缺席时回落到这里。
+# enabled: true 等价于 front_isp.type = canonical。
 canonical_backbone:
   enabled: false
 

@@ -28,6 +28,46 @@ filters_runtime: [1.7, 2.0, 1.9, 6.3, 10.0, 2.7, 2.1, 2.0, 1.9, 1.7,
 filter_runtime_penalty: false
 filter_runtime_penalty_lambda: 0.01
 
+# ---------- Front ISP (可插拔前置 ISP) ----------
+# RAW → Front ISP → Baseline RGB → AdaptiveISP(Adaptive Tail) → Task。
+# See configs/adaptiveisp.yaml for full description.
+#   type: none | canonical | infinite_isp | modular_neural_isp
+# Default off = V2 parity (E0 baseline).
+front_isp:
+  enabled: false
+  type: none
+  canonical: {}
+
+# Legacy V3-A1 key（向后兼容）：`front_isp:` 段缺席时回落到这里。
+canonical_backbone:
+  enabled: false
+
+# ---------- Action Mask (V3-A2 阶段 1) ----------
+# See configs/adaptiveisp.yaml for full description. Default off = V2 parity.
+action_mask:
+  no_repeat:
+    enabled: false
+  order:
+    enabled: false
+    rules: []
+  group_budget:
+    enabled: false
+    groups: []
+
+# ---------- RL Algorithm (V3-A3) ----------
+# See configs/adaptiveisp.yaml. Default off = V2 Actor-Critic.
+rl_algo:
+  name: actor_critic
+  ppo:
+    epochs: 4
+    clip_range: 0.2
+    value_coef: 0.5
+    entropy_coef: 0.01
+    advantage_norm: true
+    minibatch_size: 64
+    grad_clip_norm: 0.5
+    gae_lambda: 0.95
+
 # ---------- Human Quality task ----------
 human_quality:
   fivek_root:  /home/jing/datasets/fivek
@@ -60,7 +100,7 @@ exploration_penalty: 0.05
 early_stop_penalty: 1.0
 detect_loss_weight: 1.0
 use_penalty: true
-test_steps: 10                         # full ISP rollout length
+test_steps: 8                         # full ISP rollout length
 grad_clip_norm: 1.0e-05
 
 # ---------- Stop bonus (learned STOP action) ----------

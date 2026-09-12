@@ -36,6 +36,7 @@ def test_human_quality_smoke() -> None:
         list_file="/home/jing/datasets/fivek/val_expert_c.txt",
         cache_dir="/home/jing/datasets/fivek/cache_expert_c",
         imgsz=128,   # small for speed
+        return_camera=False,
     )
     assert len(ds) > 0, "FiveKDataset is empty"
     img0, tgt0 = ds[0]

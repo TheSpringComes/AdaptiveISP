@@ -77,10 +77,10 @@ class Trainer(BaseTrainer):
         gs = self.task_model.gs
         args.imgsz = self.task_model.align_imgsz(args.imgsz)
 
-        # Pipeline subsystems (Controller, Executor, SearchSpace, Backbone).
-        # Built BEFORE ReplayMemory so the (optional) V3 CanonicalBackbone is
+        # Pipeline subsystems (Controller, Executor, SearchSpace, Front ISP).
+        # Built BEFORE ReplayMemory so the Configurable Front ISP is
         # available at pool-fill time — the pool invariant is
-        # "images stored here are already post-backbone".
+        # "images stored here are already post-front_isp".
         self._build_pipeline_subsystems(cfg, self.device)
 
         # Data loaders (ReplayMemory holds partial-trajectory (image, state) pairs)
@@ -92,14 +92,14 @@ class Trainer(BaseTrainer):
                                           rect=False, image_weights=False, prefix='train: ', limit=-1,
                                           add_noise=args.add_noise, data_name=args.data_name, brightness_range=args.bri_range,
                                           noise_level=args.noise_level, use_linear=args.use_linear,
-                                          backbone=self.backbone, backbone_device=self.device)
+                                          front_isp=self.front_isp, front_isp_device=self.device)
         if val:
             self.val_loader = ReplayMemory(cfg, val, val_path, args.imgsz, args.batch_size, gs,
                                             single_cls=False, hyp=hyp, augment=False, cache=False, pad=0.0,
                                             rect=False, image_weights=False, prefix='val: ', limit=-1,
                                             add_noise=args.add_noise, data_name=args.data_name, brightness_range=args.bri_range,
                                             noise_level=args.noise_level, use_linear=args.use_linear,
-                                            backbone=self.backbone, backbone_device=self.device)
+                                            front_isp=self.front_isp, front_isp_device=self.device)
             self.val_loader = self.val_loader.get_feed_dict_and_states(8)
 
         self.task_model.attach_class_weights(self.train_loader.dataset.labels, nc)
@@ -159,9 +159,9 @@ class Trainer(BaseTrainer):
         or numpy arrays (RAW path) depending on the loader class — normalize
         both here.
 
-        V3-A1: when `self.backbone` is set, apply it once so canary rollouts
-        start from the same baseline sRGB state as training samples do
-        (the pool holds post-backbone images).
+        Front ISP: applied unconditionally (identity when disabled) so canary
+        rollouts start from the same baseline sRGB state as training samples
+        do (the pool holds post-front_isp images).
         """
         try:
             im_list, _, _, _ = self.train_loader.dataset.get_next_batch(1)
@@ -172,9 +172,8 @@ class Trainer(BaseTrainer):
         if isinstance(im, np.ndarray):
             im = torch.from_numpy(im)
         im = im.unsqueeze(0).to(self.device).float()
-        if self.backbone is not None:
-            with torch.no_grad():
-                im = self.backbone(im).clamp(0.0, 1.0)
+        with torch.no_grad():
+            im = self.front_isp(im).clamp(0.0, 1.0)
         return im
 
     # ------------------------- shadow rollout helper -------------------------
@@ -220,7 +219,7 @@ class Trainer(BaseTrainer):
 
         # V3-E3: opt-in PPO branch. `rl_algo.name == 'ppo'` swaps 1-step TD
         # + ReplayMemory for T-step rollout → GAE → K-epoch PPO. The pool is
-        # bypassed under PPO (on-policy); backbone still applies via
+        # bypassed under PPO (on-policy); the Front ISP still applies via
         # ReplayMemory.get_next_RAW.
         rl_cfg = self.cfg.get('rl_algo', {}) or {}
         use_ppo = str(rl_cfg.get('name', 'actor_critic')).lower() == 'ppo'
@@ -275,7 +274,7 @@ class Trainer(BaseTrainer):
 
             if use_ppo:
                 # -------- PPO branch: T-step rollout, no replay --------
-                # Fresh samples only (backbone applied inside get_next_RAW).
+                # Fresh samples only (front ISP applied inside get_next_RAW).
                 im_list, label_list, path_list, shapes_list, _states_list = \
                     self.train_loader.get_next_RAW(self.args.batch_size)
                 imgs = torch.from_numpy(np.stack(im_list, 0)).to(

@@ -1,0 +1,122 @@
+# V3.1-C — Joint Fine-tuning（Stage 3）：Calibration + AdaptiveISP 联合训练。
+#
+#     Calibration（小 lr，lr×lr_calib_mul）
+#         ↓
+#     AdaptiveISP（Controller + RL，V3 不变）
+#         ↓
+#     Expert C / Task Loss
+#
+# 用法（先完成 Stage 1 / 2）：
+#   python tools/train.py --task human \
+#       --cfg configs/adaptiveisp_human_v31_joint.yaml \
+#       --save_path v31_c_joint --resume <stage2 最新 ckpt 可选>
+#
+# Stage 2（V3.1-B，Frozen Calibration）= 同一 config 把
+# `training.stage` 改回 `adaptive_train`，或直接用本文件减去 joint 段。
+
+# ---------- Operators（与 H-BASE 相同）----------
+operators:
+  - exposure
+  - gamma
+  - ccm
+  - sharpen
+  - denoise
+  - tone
+  - contrast
+  - saturation
+  - wnb
+  - whitebalance
+  - n_awb
+  - n_gain
+  - n_gtm
+  - n_chroma
+  - n_gamma
+
+# ---------- Front ISP: Calibrated (V3.1) ----------
+front_isp:
+  enabled: true
+  type: calibrated
+  calibration:
+    camera_specific: true
+    n_cameras: 24              # 训练侧按数据自动覆盖
+    demosaic:
+      type: bayer_avg
+      learnable: false
+    white_balance: {learnable: true}
+    ccm:          {learnable: true}
+    bias:         {learnable: true}
+    tone:         {learnable: true}
+    init:
+      type: identity
+    # Stage 1 预训练结果（CalibISP ckpt），构建时加载：
+    ckpt: experiments/v31_stage1/ckpt/CalibISP_iter_2500.pth
+
+# ---------- 训练阶段 ----------
+training:
+  stage: joint_finetune       # adaptive_train | joint_finetune
+  lr_calib_mul: 0.01          # lr_calib = lr × 0.01 ≪ lr_adaptive
+
+# ---------- 其余与 H-BASE 相同 ----------
+action_mask:
+  no_repeat: {enabled: false}
+  order: {enabled: false, rules: []}
+  group_budget: {enabled: false, groups: []}
+
+rl_algo:
+  name: actor_critic
+
+human_quality:
+  fivek_root:  /home/jing/datasets/fivek
+  cache_dir:   /home/jing/datasets/fivek/cache_expert_c
+  train_list:  /home/jing/datasets/fivek/train_expert_c.txt
+  val_list:    /home/jing/datasets/fivek/val_expert_c.txt
+  lambda_ssim:  1.0
+  lambda_lpips: 1.0
+  lpips_net:    alex
+
+val_freq: 1000
+save_model_freq: 1000
+print_freq: 100
+summary_freq: 100
+show_img_num: 2
+
+filters_runtime: [1.7, 2.0, 1.9, 6.3, 10.0, 2.7, 2.1, 2.0, 1.9, 1.7,
+                  8.0, 3.0, 4.0, 0.4, 0.3]
+filter_runtime_penalty: false
+
+parameter_lr_mul: 1
+value_lr_mul: 1
+critic_lr_mul: 1
+critic_logit_multiplier: 10
+discount_factor: 1.0
+filter_usage_penalty: 5.0
+use_TD: true
+maximum_trajectory_length: 10
+all_reward: 1.0
+exploration: 0.2
+exploration_penalty: 0.05
+early_stop_penalty: 1.0
+detect_loss_weight: 1.0
+use_penalty: true
+test_steps: 8
+grad_clip_norm: 1.0e-05
+stop_bonus_scale: 0.5
+
+base_channels: 32
+dropout_keep_prob: 0.5
+fc1_size: 128
+feature_extractor_dims: 4096
+obs_hw: 128
+
+images_per_epoch: 500
+
+z_type: uniform
+z_dim_per_filter: 16
+
+train:
+  batch_size: 4
+  epochs: 25
+  lr: 3.0e-05
+  imgsz: 512
+  lr_decay: 0.1
+  lr_segments: 3

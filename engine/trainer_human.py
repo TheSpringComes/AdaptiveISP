@@ -31,6 +31,7 @@ from torch.utils.data import DataLoader
 
 from controller.adaptiveisp.human_reward import HumanReward
 from engine.base_trainer import BaseTrainer
+from front_isp.calibration import CalibratedFrontISP
 from tasks.human_quality import FiveKDataset, HumanQualityTask, collate_fivek
 
 
@@ -90,8 +91,29 @@ class HumanTrainer(BaseTrainer):
 
         # Pipeline subsystems shared with detection Trainer (Controller,
         # Executor, SearchSpace) — task-agnostic construction lives in
-        # BaseTrainer.
+        # BaseTrainer. Before building, give a camera-specific Calibrated
+        # Front ISP the dataset's camera count so its parameter table is
+        # sized correctly.
+        fi_cfg = cfg.get('front_isp', {}) or {}
+        calib_cfg = (fi_cfg.get('calibration', {}) or {}) if fi_cfg else {}
+        if fi_cfg.get('type') == 'calibrated' and calib_cfg.get('camera_specific'):
+            calib_cfg['n_cameras'] = max(self.train_dataset.n_cameras,
+                                         self.val_dataset.n_cameras)
         self._build_pipeline_subsystems(cfg, self.device)
+
+        # V3.1 training stage: calibration_pretrain (→ CalibrationTrainer),
+        # adaptive_train (default — calibration frozen), joint_finetune
+        # (calibration parameters join the optimizer at lr×lr_calib_mul).
+        self.training_stage = str(
+            (cfg.get('training', {}) or {}).get('stage', 'adaptive_train'))
+        if isinstance(self.front_isp, CalibratedFrontISP):
+            if self.training_stage == 'joint_finetune':
+                n_calib = len(self.front_isp.trainable_parameters())
+                print(f"joint_finetune: calibration stays learnable "
+                      f"({n_calib} tensors)")
+            else:
+                self.front_isp.freeze()   # Stage 2: Frozen Calibration
+                print(f"stage={self.training_stage}: calibration frozen")
 
         self.reward_fn = HumanReward(
             n_ops=len(cfg.operators),
@@ -139,7 +161,7 @@ class HumanTrainer(BaseTrainer):
 
         # V3-E3: opt-in PPO path. `rl_algo.name == 'ppo'` swaps the per-iter
         # 1-step TD loss for T-step rollout → GAE → K-epoch PPO update.
-        # Everything else (dataset, backbone, reward_fn, canary/val, print
+        # Everything else (dataset, front ISP, reward_fn, canary/val, print
         # block) is shared with the Actor-Critic path.
         rl_cfg = self.cfg.get('rl_algo', {}) or {}
         use_ppo = str(rl_cfg.get('name', 'actor_critic')).lower() == 'ppo'
@@ -184,18 +206,23 @@ class HumanTrainer(BaseTrainer):
             self.controller.train()
             progress = float(it) / max(max_iter_step, 1)
 
-            imgs, targets = self._next_batch()
+            imgs, targets, cam_ids = self._next_batch()
             imgs = imgs.to(self.device, non_blocking=True).float()
             targets = targets.to(self.device, non_blocking=True).float()
+            cam_ids = cam_ids.to(self.device)
 
-            # V3-A1: fixed Canonical Backbone runs before the Controller sees
-            # the image. When disabled (E0 parity), self.backbone is None and
-            # this is a no-op. `m0` is computed on the post-backbone image so
-            # the reward Q(final) - Q(initial) measures the Controller's
-            # contribution alone.
-            if self.backbone is not None:
+            # Configurable Front ISP (RAW → baseline RGB) runs before the
+            # Controller sees the image — identity when disabled (E0 parity).
+            # `m0` is computed on the post-front_isp image so the reward
+            # Q(final) - Q(initial) measures the Controller's (Adaptive Tail)
+            # contribution alone. V3.1 joint_finetune keeps the graph open so
+            # calibration parameters receive gradients from the task loss.
+            if self.training_stage == 'joint_finetune' and \
+                    isinstance(self.front_isp, CalibratedFrontISP):
+                imgs = self.front_isp(imgs, {'camera_id': cam_ids}).clamp(0.0, 1.0)
+            else:
                 with torch.no_grad():
-                    imgs = self.backbone(imgs).clamp(0.0, 1.0)
+                    imgs = self.front_isp(imgs, {'camera_id': cam_ids}).clamp(0.0, 1.0)
 
             optim.zero_grad()
 
@@ -456,7 +483,11 @@ class HumanTrainer(BaseTrainer):
                 print("output is nan or inf")
 
             if it % self.cfg.save_model_freq == 0:
-                self._save_ckpt(it, optim, extra={'task': 'human_quality'})
+                extra = {'task': 'human_quality',
+                         'training_stage': self.training_stage}
+                if isinstance(self.front_isp, CalibratedFrontISP):
+                    extra['front_isp'] = self.front_isp.state_dict()
+                self._save_ckpt(it, optim, extra=extra)
 
         # Final val on the held-out 100 images (mean SSIM/LPIPS/Q + mean length).
         self._run_val(step=max_iter_step)
@@ -470,13 +501,15 @@ class HumanTrainer(BaseTrainer):
         """
         self.controller.eval()
         T = int(self.cfg.test_steps)
+        from tasks.human_quality import psnr_batch, delta_e_batch
         ssim_sum, lpips_sum, q_sum, len_sum, stop_count, n = 0.0, 0.0, 0.0, 0, 0, 0
+        psnr_sum, de_sum = 0.0, 0.0
         with torch.no_grad():
-            for imgs_v, targets_v in self.val_loader:
+            for imgs_v, targets_v, cam_v in self.val_loader:
                 imgs_v = imgs_v.to(self.device, non_blocking=True).float()
                 targets_v = targets_v.to(self.device, non_blocking=True).float()
-                if self.backbone is not None:
-                    imgs_v = self.backbone(imgs_v).clamp(0.0, 1.0)
+                cam_v = cam_v.to(self.device)
+                imgs_v = self.front_isp(imgs_v, {'camera_id': cam_v}).clamp(0.0, 1.0)
                 state = self.runtime.initial_state(imgs_v)
                 lengths = torch.zeros(imgs_v.shape[0], dtype=torch.long, device=self.device)
                 stopped_learned = torch.zeros(imgs_v.shape[0], dtype=torch.bool, device=self.device)
@@ -499,6 +532,8 @@ class HumanTrainer(BaseTrainer):
                 ssim_sum += parts['ssim'].sum().item()
                 lpips_sum += parts['lpips'].sum().item()
                 q_sum += q_final.sum().item()
+                psnr_sum += psnr_batch(state.image, targets_v).sum().item()
+                de_sum += delta_e_batch(state.image, targets_v).sum().item()
                 len_sum += int(lengths.sum().item())
                 stop_count += int(stopped_learned.sum().item())
                 n += b
@@ -508,6 +543,8 @@ class HumanTrainer(BaseTrainer):
             'val/ssim': ssim_sum / max(n, 1),
             'val/lpips': lpips_sum / max(n, 1),
             'val/quality': q_sum / max(n, 1),
+            'val/psnr': psnr_sum / max(n, 1),
+            'val/delta_e': de_sum / max(n, 1),
             'val/mean_length': len_sum / max(n, 1),
             'val/pct_learned_stop': stop_count / max(n, 1),
             'val/n_samples': n,
@@ -522,6 +559,7 @@ class HumanTrainer(BaseTrainer):
         print(f"  samples: {metrics['val/n_samples']}")
         print(f"  SSIM:  {metrics['val/ssim']:.4f}")
         print(f"  LPIPS: {metrics['val/lpips']:.4f}")
+        print(f"  PSNR:  {metrics['val/psnr']:.2f} dB   ΔE76: {metrics['val/delta_e']:.2f}")
         print(f"  Q:     {metrics['val/quality']:+.4f}")
         print(f"  mean rollout length: {metrics['val/mean_length']:.2f}/{T}")
         print(f"  pct learned-STOP (before time-limit): {100 * metrics['val/pct_learned_stop']:.1f}%")

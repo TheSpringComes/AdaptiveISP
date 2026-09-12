@@ -1,0 +1,18 @@
+# configs/front_isp/infinite.yaml — Infinite-ISP 内部参数配置（占位）。
+#
+# 这是 10x-Engineers/Infinite-ISP 自己的参数 YAML 的存放位置：
+#   1. git clone https://github.com/10x-Engineers/Infinite-ISP third_party/Infinite-ISP
+#   2. 复制其 config/ 目录下的参数 YAML 到本文件并按需调整
+#      （is_enable / 算法类型 / 参数：Bayer denoise、WB、contrast、
+#       sharpen、2D denoise、scaling 等全部由该文件控制）。
+#
+# 主配置中的接入方式：
+#   front_isp:
+#     enabled: true
+#     type: infinite_isp
+#     infinite_isp:
+#       repo_path: third_party/Infinite-ISP
+#       config_path: configs/front_isp/infinite.yaml
+#
+# 注意：本文件当前为空（仅注释）— front_isp/infinite_isp wrapper 的
+# _run_pipeline() 接入真实仓库后此文件才生效。

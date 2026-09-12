@@ -31,8 +31,9 @@ from torch.utils.tensorboard import SummaryWriter
 
 from controller.adaptiveisp import AdaptiveISPController
 from engine.util import Tee, load_config
+from front_isp import build_front_isp_from_cfg
 from isp.registry import build_operator
-from pipeline import CanonicalBackbone, PipelineExecutor
+from pipeline import PipelineExecutor
 from search import SearchSpace
 from search.priors.action_mask import build_from_config as build_action_mask
 
@@ -79,16 +80,21 @@ class BaseTrainer:
         return cfg
 
     def _build_pipeline_subsystems(self, cfg, device) -> None:
-        """Build ops / runtime / search_space / controller (task-agnostic).
+        """Build ops / runtime / search_space / controller / front_isp.
 
-        Sets `self.runtime`, `self.search_space`, `self.controller`. Uses
-        `cfg.operators` for the op list; every other cfg field consumed here
-        (`base_channels`, `fc1_size`, `feature_extractor_dims`, ...) is
-        identical between Detection and Human configs.
+        Sets `self.runtime`, `self.search_space`, `self.controller`, and
+        `self.front_isp`. Uses `cfg.operators` for the op list; every other
+        cfg field consumed here (`base_channels`, `fc1_size`,
+        `feature_extractor_dims`, ...) is identical between Detection and
+        Human configs.
 
-        Also builds `self.backbone`: a fixed CanonicalBackbone when
-        `cfg.canonical_backbone.enabled` is truthy, else None. Subclasses
-        (and evaluator) apply it at their data-load boundary.
+        `self.front_isp` is the Configurable Front ISP (RAW → baseline RGB)
+        built from `cfg.front_isp` via `build_front_isp_from_cfg`. It is
+        ALWAYS a FrontISPBase module — identity when disabled — so callers
+        can apply it unconditionally:
+            imgs = self.front_isp(imgs).clamp(0.0, 1.0)
+        `cfg.front_isp` falls back to legacy `canonical_backbone.enabled`
+        (V3-A1 configs keep working unchanged).
         """
         ops = {name: build_operator(name).to(device) for name in cfg.operators}
         self.runtime = PipelineExecutor(ops, cfg.operators)
@@ -99,11 +105,7 @@ class BaseTrainer:
         )
         priors = [action_mask_pipeline] if action_mask_pipeline.priors else None
         self.search_space = SearchSpace(ops, cfg.operators, priors=priors)
-        bb_cfg = cfg.get('canonical_backbone', {}) or {}
-        self.backbone = (
-            CanonicalBackbone().to(device) if bool(bb_cfg.get('enabled', False))
-            else None
-        )
+        self.front_isp = build_front_isp_from_cfg(cfg).to(device)
         self.controller = AdaptiveISPController(
             ops, cfg.operators,
             obs_hw=int(cfg.get('obs_hw', 64)),
@@ -131,7 +133,20 @@ class BaseTrainer:
     # -------------------- optimizer + resume + save --------------------
 
     def _build_optimizer_and_scheduler(self, args, cfg):
-        optim = torch.optim.Adam(self.controller.parameters(), lr=args.lr)
+        # V3.1 joint_finetune：把 Front ISP 的可训练标定参数加入 optimizer，
+        # lr 乘 lr_calib_mul（≪ 1），避免基础颜色空间被任务奖励大幅破坏。
+        stage = str((cfg.get('training', {}) or {}).get('stage', 'adaptive_train'))
+        lr_calib_mul = float((cfg.get('training', {}) or {}).get('lr_calib_mul', 0.01))
+        calib_params = []
+        if stage == 'joint_finetune':
+            calib_params = [p for p in self.front_isp.parameters() if p.requires_grad]
+            if calib_params:
+                print(f"joint_finetune: +{len(calib_params)} calibration tensors "
+                      f"at lr={args.lr * lr_calib_mul:.2e} (mul={lr_calib_mul})")
+        groups = [{'params': self.controller.parameters(), 'lr': args.lr}]
+        if calib_params:
+            groups.append({'params': calib_params, 'lr': args.lr * lr_calib_mul})
+        optim = torch.optim.Adam(groups)
         max_iter_step = int(cfg.max_iter_step)
         lr_decay = self._lr_decay
         segments = self._lr_segments
@@ -152,6 +167,15 @@ class BaseTrainer:
                 "Resume ckpt is legacy format; Controller has different "
                 "architecture — starting fresh."
             )
+        # V3.1: resume the calibration state when present.
+        if 'front_isp' in ckpt:
+            from front_isp.calibration import CalibratedFrontISP
+            if isinstance(getattr(self, 'front_isp', None), CalibratedFrontISP):
+                try:
+                    self.front_isp.load_state_dict(ckpt['front_isp'])
+                    print("resumed calibration state from ckpt")
+                except RuntimeError as exc:
+                    logger.warning(f"calibration state mismatch: {exc}")
 
     def _save_ckpt(self, iter_idx: int, optim, extra: Optional[dict] = None) -> None:
         self.controller.eval()

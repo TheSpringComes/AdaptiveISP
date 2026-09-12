@@ -5,7 +5,13 @@ Task/dataset for the human-perceptual objective. Produced metrics feed
 step.
 """
 from tasks.human_quality.dataset import FiveKDataset, collate_fivek
-from tasks.human_quality.metrics import quality_score, ssim_batch, lpips_batch
+from tasks.human_quality.metrics import (
+    quality_score,
+    ssim_batch,
+    lpips_batch,
+    psnr_batch,
+    delta_e_batch,
+)
 from tasks.human_quality.task import HumanQualityTask
 
 __all__ = [
@@ -13,6 +19,8 @@ __all__ = [
     "HumanQualityTask",
     "collate_fivek",
     "lpips_batch",
+    "psnr_batch",
+    "delta_e_batch",
     "quality_score",
     "ssim_batch",
 ]

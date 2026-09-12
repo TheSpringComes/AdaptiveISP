@@ -65,8 +65,8 @@ class ReplayMemory:
                  brightness_range=None,
                  noise_level=None,
                  use_linear=False,
-                 backbone=None,
-                 backbone_device=None):
+                 front_isp=None,
+                 front_isp_device=None):
         self.cfg = cfg
         if data_name == "coco":
             # SynRAW pipeline (enabled): COCO is already preprocessed to SynRAW.
@@ -129,27 +129,27 @@ class ReplayMemory:
         self.target_pool_size = cfg.replay_memory_size
         self.fake_output = None
         self.batch_size = batch_size
-        # V3-A1: optional CanonicalBackbone applied to every fresh sample
-        # BEFORE it enters the pool. Passed in by the trainer. When None,
-        # behavior matches V2 exactly (E0 baseline).
-        self._backbone = backbone
-        self._backbone_device = backbone_device
+        # Configurable Front ISP applied to every fresh sample BEFORE it
+        # enters the pool. Passed in by the trainer; identity when disabled
+        # (V2 / E0 baseline behavior unchanged).
+        self._front_isp = front_isp
+        self._front_isp_device = front_isp_device
         if load:
             self.load()
 
     def load(self):
         self.fill_pool()
 
-    def _apply_backbone_np(self, im_list: list) -> list:
+    def _apply_front_isp_np(self, im_list: list) -> list:
         """Run every image in `im_list` (numpy CHW float [0,1]) through the
-        backbone. Return a new numpy list. No-op when backbone is None.
+        Front ISP. Return a new numpy list. No-op when it is identity.
         """
-        if self._backbone is None or not im_list:
+        if self._front_isp is None or not im_list:
             return im_list
         arr = np.stack(im_list, axis=0).astype(np.float32)              # (B, C, H, W)
         with torch.no_grad():
-            t = torch.from_numpy(arr).to(self._backbone_device, non_blocking=True)
-            out = self._backbone(t).clamp(0.0, 1.0).cpu().numpy()
+            t = torch.from_numpy(arr).to(self._front_isp_device, non_blocking=True)
+            out = self._front_isp(t).clamp(0.0, 1.0).cpu().numpy()
         return [out[i] for i in range(out.shape[0])]
 
     def get_initial_states(self, batch_size):
@@ -162,7 +162,7 @@ class ReplayMemory:
     def fill_pool(self):
         while len(self.image_pool) < self.target_pool_size:
             im_list, label_list, path_list, shapes_list = self.dataset.get_next_batch(self.batch_size)
-            im_list = self._apply_backbone_np(im_list)
+            im_list = self._apply_front_isp_np(im_list)
             for i in range(len(im_list)):
                 self.image_pool.append(Dict(
                     im=im_list[i],
@@ -176,7 +176,7 @@ class ReplayMemory:
 
     def get_next_RAW(self, batch_size):
         im_list, label_list, path_list, shapes_list = self.dataset.get_next_batch(batch_size)
-        im_list = self._apply_backbone_np(im_list)
+        im_list = self._apply_front_isp_np(im_list)
         pool = []
         for i in range(len(im_list)):
             pool.append(Dict(

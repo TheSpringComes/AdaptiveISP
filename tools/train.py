@@ -29,8 +29,9 @@ if _ROOT not in sys.path:
 
 def _add_shared_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--task", type=str, default="detection",
-                   choices=["detection", "human"],
-                   help="downstream task; picks the trainer subclass")
+                   choices=["detection", "human", "calibration"],
+                   help="downstream task; picks the trainer subclass "
+                        "(calibration = V3.1 Stage 1 calibration pretrain)")
     p.add_argument("--mode", type=str, default="train_val",
                    choices=["train", "train_val"],
                    help="train, or train and val (val-mode mAP eval lives in tools/val.py)")
@@ -94,6 +95,15 @@ def _run_detection(args) -> None:
     trainer.train()
 
 
+def _run_calibration(args) -> None:
+    """V3.1 Stage 1: train only the Front ISP calibration params."""
+    import isp  # noqa: F401
+
+    from engine.trainer_calibration import CalibrationTrainer
+    trainer = CalibrationTrainer(args, task="train")
+    trainer.train()
+
+
 def _run_human(args) -> None:
     # Human path uses the raw --save_path (no data_name prefix; FiveK/Expert C
     # is implicit). Neural op registry loads via import side effect.
@@ -110,6 +120,8 @@ def main() -> None:
         _run_detection(args)
     elif args.task == "human":
         _run_human(args)
+    elif args.task == "calibration":
+        _run_calibration(args)
     else:
         raise ValueError(f"unknown --task: {args.task!r}")
 

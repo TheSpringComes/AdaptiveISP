@@ -48,8 +48,9 @@ import tasks  # noqa: F401  bootstrap yolov3 sys.path
 import isp    # noqa: F401  register operators
 
 from controller.adaptiveisp import AdaptiveISPController
+from front_isp import build_front_isp_from_cfg
 from isp.registry import build_operator
-from pipeline import CanonicalBackbone, PipelineExecutor
+from pipeline import PipelineExecutor
 from search import SearchSpace
 from search.priors.action_mask import build_from_config as build_action_mask
 
@@ -318,11 +319,7 @@ def run_detection(
     ).to(device)
     controller.load_state_dict(ckpt['controller_model'])
     controller.eval()
-    bb_cfg = cfg.get('canonical_backbone', {}) or {}
-    backbone = (
-        CanonicalBackbone().to(device) if bool(bb_cfg.get('enabled', False))
-        else None
-    )
+    front_isp = build_front_isp_from_cfg(cfg).to(device)
 
     out_dir = exp_dir / "visualization"
     out_dir.mkdir(exist_ok=True)
@@ -332,9 +329,8 @@ def run_detection(
             break
         imgs = imgs.to(device).float()
         targets = targets.to(device)
-        if backbone is not None:
-            with torch.no_grad():
-                imgs = backbone(imgs).clamp(0.0, 1.0)
+        with torch.no_grad():
+            imgs = front_isp(imgs).clamp(0.0, 1.0)
         _, _, h, w = imgs.shape
 
         # rollout
@@ -400,22 +396,18 @@ def run_human(
     ).to(device)
     controller.load_state_dict(ckpt['controller_model'])
     controller.eval()
-    bb_cfg = cfg.get('canonical_backbone', {}) or {}
-    backbone = (
-        CanonicalBackbone().to(device) if bool(bb_cfg.get('enabled', False))
-        else None
-    )
+    front_isp = build_front_isp_from_cfg(cfg).to(device)
 
     out_dir = exp_dir / "visualization"
     out_dir.mkdir(exist_ok=True)
 
     for case_idx in range(min(n_cases, len(dataset))):
-        img, target = dataset[case_idx]
+        img, target, cam_id = dataset[case_idx]
         img = img.unsqueeze(0).to(device)
         target = target.unsqueeze(0).to(device)
-        if backbone is not None:
-            with torch.no_grad():
-                img = backbone(img).clamp(0.0, 1.0)
+        cam = torch.tensor([cam_id], dtype=torch.long, device=device)
+        with torch.no_grad():
+            img = front_isp(img, {'camera_id': cam}).clamp(0.0, 1.0)
 
         stages, final_img = rollout_capturing_stages(
             controller, executor, search_space, img, list(cfg.operators),

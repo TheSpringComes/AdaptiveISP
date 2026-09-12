@@ -11,6 +11,8 @@ TESTS=(
   "debug/smoke/test_imports.py"
   "debug/smoke/test_operators.py"
   "debug/smoke/test_pipeline.py"
+  "debug/smoke/test_front_isp.py"
+  "debug/smoke/test_calibration.py"
   "debug/smoke/test_controller.py"
   "debug/smoke/test_end_to_end.py"
 )
