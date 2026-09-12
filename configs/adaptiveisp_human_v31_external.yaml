@@ -41,7 +41,7 @@ front_isp:
     backend: infinite_isp          # infinite_isp | samsung_isp
     repo_path: front_isp/third_party/InfiniteISP_RAW
     config_path: front_isp/third_party/InfiniteISP_RAW/config/hikrobot_baseline.yml
-    device: cpu                    # cpu | gpu（gpu 启用 optional_gpu 加速）
+    device: gpu                    # cpu | gpu（optional_gpu 加速，4090 实测 ~4s/iter）
 
 # ---------- 其余与 H-BASE 相同 ----------
 action_mask:

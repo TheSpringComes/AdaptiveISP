@@ -1,17 +1,19 @@
-# V3.1 Stage 2 — AdaptiveISP 训练（learnable Front ISP 冻结）。
+# V3.1 消融 — external Front ISP（第三方 ISP，V3.1 模式之四）。
 #
-#     Stage 1 产物（LearnableISP ckpt）→ 加载并冻结
-#         ↓
-#     AdaptiveISP（Controller + RL，V3 逻辑不变）
-#         ↓
-#     Expert C / Task Loss
+#     RAW → External ISP(backend) → Baseline RGB → AdaptiveISP → ...
 #
-# 用法（先完成 Stage 1 预训练）：
+# 用法：
 #   python tools/train.py --task human \
-#       --cfg configs/adaptiveisp_human_v31_stage2.yaml \
-#       --save_path v31_stage2
+#       --cfg configs/adaptiveisp_human_v31_external.yaml \
+#       --save_path v31_external
 #
-# 小规模验证：加 --max_iters 40。
+# 前置条件（wrapper 构建期会给出可操作的报错指引）：
+#   infinite_isp: 仓库 front_isp/third_party/InfiniteISP_RAW（上游
+#     Infinite-ISP + 已验证的 hikrobot_baseline.yml 基线：传感器标定
+#     模块全部关闭）；缺省时 wrapper 直接使用其基线配置。
+#   samsung_isp: 见 front_isp/modular_neural_isp/wrapper.py
+#
+# 本配置默认指向 infinite_isp；换 backend 只改 external.backend。
 
 # ---------- Operators（与 H-BASE 相同）----------
 operators:
@@ -31,21 +33,12 @@ operators:
   - n_chroma
   - n_gamma
 
-# ---------- Front ISP: learnable（V3.1 模式之三，Stage 2 冻结） ----------
+# ---------- Front ISP: external（V3.1 模式之四） ----------
 front_isp:
   enabled: true
-  type: learnable
-  learnable:
-    camera_specific: true
-    n_cameras: 24              # 训练侧按数据自动覆盖
-    white_balance: {learnable: true}   # learnable 只在 Stage 1 生效；
-    ccm:          {learnable: true}     # Stage 2 恒冻结
-    bias:         {learnable: true}
-    tone:         {learnable: true}
-    init:
-      type: identity
-    # Stage 1 预训练结果（LearnableISP ckpt），构建时加载后冻结：
-    ckpt: experiments/v31_ablation_stage1/ckpt/LearnableISP_iter_1500.pth
+  type: external
+  external:
+    backend: samsung_isp
 
 # ---------- 其余与 H-BASE 相同 ----------
 action_mask:

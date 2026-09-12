@@ -479,7 +479,19 @@ class HumanTrainer(BaseTrainer):
                 self._save_ckpt(it, optim, extra=extra)
 
         # Final val on the held-out 100 images (mean SSIM/LPIPS/Q + mean length).
-        self._run_val(step=max_iter_step)
+        final_metrics = self._run_val(step=max_iter_step)
+        # 消融汇总用：final val 指标 + 全程算子选择累计，落盘 JSON。
+        try:
+            import json as _json
+            summary = dict(final_metrics)
+            summary['iter'] = max_iter_step
+            summary['front_isp'] = repr(self.front_isp)[:200]
+            summary['op_pick_cum'] = {
+                name: int(op_pick_cum[i]) for i, name in enumerate(self.cfg.operators)}
+            with open(os.path.join(self.base_dir, 'final_val.json'), 'w') as fh:
+                _json.dump(summary, fh, indent=2, ensure_ascii=False)
+        except Exception as exc:  # pragma: no cover
+            logger.warning(f"final_val.json dump failed: {exc!r}")
         torch.cuda.empty_cache()
 
     def _run_val(self, step: int) -> dict:
