@@ -3,8 +3,8 @@
 Covers:
   - identity / fixed / learnable / external (+ legacy 别名) 全部注册
   - build_front_isp honors enabled:false / type:identity|none → Identity
-  - fixed: 模块链构建、前向 shape/range、未知模块快速失败、
-    无 modules 报错、自定义模块注册扩展
+  - fixed: FittedISP 方法（inline params 构建、前向 shape/range、
+    缺字段/缺参数文件的报错）
   - external: backend 分发（合法名构建、未知名报错、缺第三方仓库报
     可操作错误）
   - canonical front ISP output shape/range on a synthetic batch
@@ -28,8 +28,7 @@ from engine.util import Dict, load_config
 
 def test_front_isp() -> None:
     import front_isp as fi
-    from front_isp.fixed import FixedFrontISP, list_fixed_modules, \
-        register_fixed_module
+    from front_isp.fixed import FixedFrontISP
     from front_isp.identity import IdentityFrontISP
 
     # --- registration: V3.1 四种模式 + legacy 别名 ---
@@ -54,54 +53,35 @@ def test_front_isp() -> None:
     except ValueError:
         pass
 
-    # --- fixed: 模块链构建 + 前向 ---
+    # --- fixed: FittedISP 方法（inline params）构建 + 前向 ---
     fixed = fi.build_front_isp({'type': 'fixed', 'fixed': {
-        'modules': [
-            {'name': 'wb', 'auto': 'grayworld'},
-            {'name': 'gamma', 'gamma': 0.4545},
-        ]}})
+        'params': {'exponent': 0.4545,
+                   'ccm': [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                   'offset': [0.0, 0.0, 0.0],
+                   'detail_strength': 0.4}}})
     assert isinstance(fixed, FixedFrontISP)
     x = torch.rand(2, 3, 32, 48)
     y = fixed(x)
     assert y.shape == x.shape
     assert y.min() >= 0.0 and y.max() <= 1.0
-    assert not torch.allclose(y, x)          # gamma 改变了图像
+    assert not torch.allclose(y, x)          # gamma + detail 改变了图像
     assert len(list(fixed.parameters())) == 0  # 无任何可训练参数
 
-    # --- fixed: 未知模块 → 构建期报错 ---
+    # --- fixed: 缺必需字段 → 构建期报错 ---
     try:
         fi.build_front_isp({'type': 'fixed', 'fixed': {
-            'modules': [{'name': 'no_such_module'}]}})
+            'params': {'exponent': 1.0}}})
         raise AssertionError("expected ValueError")
     except ValueError:
         pass
 
-    # --- fixed: 缺 modules → 报错 ---
+    # --- fixed: 参数文件不存在 → 可操作报错 ---
     try:
-        fi.build_front_isp({'type': 'fixed', 'fixed': {}})
-        raise AssertionError("expected ValueError")
-    except ValueError:
+        fi.build_front_isp({'type': 'fixed', 'fixed': {
+            'params': 'configs/front_isp/no_such_params.json'}})
+        raise AssertionError("expected FileNotFoundError")
+    except FileNotFoundError:
         pass
-
-    # --- fixed: 自定义模块注册扩展（规划要求：手动添加算子即可） ---
-    try:
-        @register_fixed_module('smoke_test_module')
-        def _double(img, cfg):
-            return img * float(cfg.get('k', 1.0))
-    except ValueError:
-        pass  # 重复注册（重跑 smoke）时忽略
-    fixed2 = fi.build_front_isp({'type': 'fixed', 'fixed': {
-        'modules': [{'name': 'smoke_test_module', 'k': 0.5}]}})
-    y2 = fixed2(x)
-    assert torch.allclose(y2, (x * 0.5).clamp(0, 1), atol=1e-6)
-    assert 'smoke_test_module' in list_fixed_modules()
-
-    # --- fixed: ccm 'cam2rgb' 快捷方式 + bias 模块 ---
-    fixed3 = fi.build_front_isp({'type': 'fixed', 'fixed': {
-        'modules': [{'name': 'ccm', 'matrix': 'cam2rgb'},
-                    {'name': 'bias', 'offset': [0.0, 0.0, 0.0]}]}})
-    y3 = fixed3(x)
-    assert y3.shape == x.shape and y3.min() >= 0.0
 
     # --- external: 未知名 backend → 报错；缺仓库 → 可操作错误 ---
     try:
@@ -163,13 +143,10 @@ def test_front_isp() -> None:
     cfg = load_config('configs/adaptiveisp_human_v31_stage2.yaml')
     assert isinstance(fi.build_front_isp_from_cfg(cfg), LearnableFrontISP)
     cfg = load_config('configs/adaptiveisp_human_v31_external.yaml')
-    # external 配置构建会因第三方仓库缺失而报可操作错误 — 只验证类型名
-    try:
-        fi.build_front_isp_from_cfg(cfg)
-        built = True
-    except (FileNotFoundError, NotImplementedError, ImportError):
-        built = False
-    assert not built, "external repo missing should fail with actionable error"
+    # external 配置：仓库存在（third_party/InfiniteISP_RAW）→ 构建成功；
+    # 仓库缺失的可操作报错已由上面 '/nonexistent' 循环覆盖。
+    m = fi.build_front_isp_from_cfg(cfg)
+    assert type(m).__name__ == 'ExternalFrontISP'
 
     # --- V3.1 两阶段语义：Stage 2 冻结（模拟 trainer_human 的冻结逻辑） ---
     m = fi.build_front_isp({'type': 'learnable'})

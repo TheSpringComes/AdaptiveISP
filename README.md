@@ -123,9 +123,9 @@ RAW → Input Adapter (Dataset layer: Bayer reconstruction per per-file CFA patt
 | type | 说明 | 实现位置 |
 |---|---|---|
 | `identity` | 不使用 Front ISP（对照组，旧名 `none`） | `front_isp/identity.py` |
-| `fixed` | 人工配置 ISP：WB / CCM / Bias / Gamma / Exposure / Smoothstep 等模块，顺序与参数全部由 `fixed.modules` 配置指定，训练不更新；模块注册表开放扩展 | `front_isp/fixed.py` |
+| `fixed` | FittedISP 拟合方法：色调指数 → CCM＋偏置 → 细节控制，全局共用一套参数。由 `tools/fit_front_isp.py` 用 FittedISP 的 IRLS 拟合方法在 FiveK 训练集上离线拟合一次（`configs/front_isp/fitted_fivek.json`），运行期完全固定 | `front_isp/fixed.py`（方法来自 `front_isp/FittedISP/`） |
 | `learnable` | 固定结构 + 可训练参数（WB gain / CCM / Bias / Gamma，camera-specific 参数表，**两阶段训练**：Stage 1 只训 Front ISP 并冻结；Stage 2 跑 AdaptiveISP。不联合训练 | `front_isp/learnable/` |
-| `external` | 接入现有开源 ISP：`backend: infinite_isp \| samsung_isp`，wrapper 统一输入输出 | `front_isp/external.py` + wrappers |
+| `external` | 接入现有开源 ISP：`backend: infinite_isp \| samsung_isp`。infinite_isp 使用 `third_party/InfiniteISP_RAW` 的已验证基线（传感器标定模块全关，支持 CPU/GPU），wrapper 参照其 `process_raw.py` 接入方式 | `front_isp/external.py` + wrappers |
 
 - **两阶段训练（learnable）**：Stage 1 `tools/train.py --task learnable`（loss = λ₁L1 + λ_s(1−SSIM) + λ_pLPIPS vs Expert C），保存 ckpt 并冻结；Stage 2 `--task human` 加载冻结的 Front ISP 跑 AdaptiveISP。不做联合训练，避免两部分同时变化后难以归因。
 - **消融四路对比**：不用（`adaptiveisp_human.yaml` baseline）/ 人工固定（`v31_fixed.yaml`）/ 学习参数（`v31_stage2.yaml`）/ 开源 ISP（`v31_external.yaml`）。看两个问题：Front ISP 有没有帮助；基础色彩问题前置解决后 RL 是否更容易训练。
@@ -162,10 +162,12 @@ isp/
 └─ third_party/modular_neural_isp/    gitignored; 172 MB Samsung code
 front_isp/                      V3.1 可插拔前置 ISP（四种统一模式）
 ├─ identity.py                  identity（对照组，旧名 none）
-├─ fixed.py                     fixed：配置驱动模块链 + 开放模块注册表
+├─ fixed.py                     fixed：FittedISP 拟合方法（exponent/CCM/offset/detail）
+├─ FittedISP/                   FittedISP 拟合工具（fit.py/isp.py，独立可运行）
 ├─ learnable/                   learnable：可训练 WB/CCM/Bias/Gamma（两阶段训练）
 ├─ canonical.py                 legacy 固定链（V3-A1）
 ├─ external.py                  external：backend 分发（infinite_isp | samsung_isp）
+├─ infinite_isp/                InfiniteISP_RAW 基线 wrapper（参照 process_raw.py）
 └─ raw_adapter.py               Input Adapter：Bayer 重建 → demosaic → linear RGB
 controller/adaptiveisp/         Controller + STOP head + Reward + HumanReward + PPO
 pipeline/                       PipelineState (op_usage: int64) + Executor + TrajectoryBuffer
@@ -469,4 +471,8 @@ backbone is vendored from
 (Afifi et al., SIGGRAPH Asia 2026); the classical Infinite-ISP-derived
 operators are Torch-native reimplementations of algorithms from
 [Infinite-ISP](https://github.com/10x-Engineers/Infinite-ISP) by
-10x-Engineers.
+10x-Engineers. The external `infinite_isp` front-end wraps the
+upstream Infinite-ISP pipeline via `front_isp/third_party/InfiniteISP_RAW`
+(algorithm files identical to upstream, plus a verified sensor-agnostic
+baseline config), and the `fixed` front-end implements the fitting method
+from `front_isp/FittedISP` (auto-fitted global ISP).

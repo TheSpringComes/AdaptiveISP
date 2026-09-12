@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "model": "exp(a*r2+b*r2_squared)",
+  "coefficients": [
+    0.0,
+    0.6194674176410677
+  ],
+  "max_gain": 3,
+  "center": "image_center",
+  "method": "ordinary_scene_estimate",
+  "reference": "center_gain_1",
+  "default_enabled": false,
+  "note": "普通场景的照明/构图与镜头暗角不可唯一分离；这是受最大增益限制的估计，非真实平场标定。"
+}

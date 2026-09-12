@@ -1,16 +1,16 @@
-# V3.1 消融 — fixed Front ISP（人工配置 ISP，V3.1 模式之二）。
+# V3.1 消融 — fixed Front ISP（FittedISP 拟合方法，V3.1 模式之二）。
 #
-#     RAW → Front ISP(人工链，参数固定) → Baseline RGB → AdaptiveISP → ...
+#     RAW → Front ISP(全局拟合参数，运行期固定) → Baseline RGB → AdaptiveISP → ...
 #
 # 用法：
 #   python tools/train.py --task human \
 #       --cfg configs/adaptiveisp_human_v31_fixed.yaml \
 #       --save_path v31_fixed
 #
-# 默认链：gray-world AWB → gamma 1/2.2。全部参数手工设定，训练中不更新。
-# 可用模块见 front_isp/fixed.py::list_fixed_modules()：
-#   wb(grayworld 或固定 gains) / ccm(含 'cam2rgb' 快捷方式) / bias /
-#   gamma / exposure / smoothstep —— 新增模块 = 注册一个函数即可。
+# 实现：front_isp/fixed.py（FittedISP 方法：色调指数 → CCM＋偏置 →
+# 细节控制）。参数由 tools/fit_front_isp.py 用 FittedISP 的 IRLS 拟合
+# 方法在 FiveK 训练集上离线拟合一次，运行期完全固定、无可训练参数。
+# 重新拟合：python tools/fit_front_isp.py
 
 # ---------- Operators（与 H-BASE 相同）----------
 operators:
@@ -35,12 +35,7 @@ front_isp:
   enabled: true
   type: fixed
   fixed:
-    modules:
-      - {name: wb, auto: grayworld}
-      # 可选示例（取消注释即生效）：
-      # - {name: exposure, ev: -0.3}
-      # - {name: ccm, matrix: cam2rgb, bias: [0, 0, 0]}
-      - {name: gamma, gamma: 0.4545}     # 1/2.2 编码 gamma
+    params: configs/front_isp/fitted_fivek.json   # FittedISP 格式参数
 
 # ---------- 其余与 H-BASE 相同 ----------
 action_mask:

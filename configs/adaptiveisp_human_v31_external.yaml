@@ -8,10 +8,9 @@
 #       --save_path v31_external
 #
 # 前置条件（wrapper 构建期会给出可操作的报错指引）：
-#   infinite_isp:
-#     git clone https://github.com/10x-Engineers/Infinite-ISP \
-#         third_party/Infinite-ISP
-#     # 参数 YAML 复制其 config/ 到 configs/front_isp/infinite.yaml
+#   infinite_isp: 仓库 front_isp/third_party/InfiniteISP_RAW（上游
+#     Infinite-ISP + 已验证的 hikrobot_baseline.yml 基线：传感器标定
+#     模块全部关闭）；缺省时 wrapper 直接使用其基线配置。
 #   samsung_isp: 见 front_isp/modular_neural_isp/wrapper.py
 #
 # 本配置默认指向 infinite_isp；换 backend 只改 external.backend。
@@ -40,8 +39,9 @@ front_isp:
   type: external
   external:
     backend: infinite_isp          # infinite_isp | samsung_isp
-    repo_path: third_party/Infinite-ISP
-    config_path: configs/front_isp/infinite.yaml
+    repo_path: front_isp/third_party/InfiniteISP_RAW
+    config_path: front_isp/third_party/InfiniteISP_RAW/config/hikrobot_baseline.yml
+    device: cpu                    # cpu | gpu（gpu 启用 optional_gpu 加速）
 
 # ---------- 其余与 H-BASE 相同 ----------
 action_mask:
