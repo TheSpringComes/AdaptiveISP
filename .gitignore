@@ -46,3 +46,5 @@ logs_ablation/
 
 # V2-AI: vendored Samsung Modular Neural ISP (cloned separately, contains model weights)
 isp/third_party/modular_neural_isp/
+# V3.1 external backends（Front ISP 第三方 clone）
+front_isp/third_party/
