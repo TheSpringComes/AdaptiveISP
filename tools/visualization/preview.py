@@ -1,4 +1,4 @@
-"""tools/preview.py — Human 数据集人工校验预览 (v2 cache 专用).
+"""tools/visualization/preview.py — Human 数据集人工校验预览 (v2 cache 专用).
 
 每次抽样 N 张 (默认 4) val/train 样本, 生成两张 PNG:
 
@@ -13,9 +13,9 @@ case 的宽高比自适应, matplotlib imshow(aspect='equal') 保证无形变。
 
 输出统一到 experiments/preview/<tag>/。
 用法:
-    python tools/preview.py --n 4                      # val 抽样
-    python tools/preview.py --split train --n 3        # train 抽样
-    python tools/preview.py --n 4 --seed 123           # 换一组样本
+    python tools/visualization/preview.py --n 4                      # val 抽样
+    python tools/visualization/preview.py --split train --n 3        # train 抽样
+    python tools/visualization/preview.py --n 4 --seed 123           # 换一组样本
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-_ROOT = Path(__file__).resolve().parent.parent
+_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 

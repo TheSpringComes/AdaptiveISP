@@ -25,7 +25,7 @@ demosaic 默认方法：
     RGB = 0.5 * Malvar(2004) + 0.5 * Bilinear
 
 Malvar 5x5 核与 colour-demosaicing（BSD-3-Clause,
-Colour Developers）的参考实现逐系数一致；在 tools/verify_raw_adapter.py
+Colour Developers）的参考实现逐系数一致；在 tools/dataset/verify_raw_adapter.py
 中与其输出做数值对拍。实现基于 torch conv2d（CPU 即可，可批处理）。
 
 Demosaic 输出统一为 (3, H, W) float32、值域 [0, 1] 的 linear RGB；
@@ -49,7 +49,7 @@ __all__ = [
 ]
 
 # 名称 -> libraw 颜色码网格 (2, 2)。码：0=R, 1=G, 2=B, 3=第二绿。
-# 与 tools/fivek_cfa_scan.py 的实测扫描映射一致（原始 DNG raw_pattern）。
+# 与 tools/dataset/fivek_cfa_scan.py 的实测扫描映射一致（原始 DNG raw_pattern）。
 BAYER_PATTERNS: dict[str, np.ndarray] = {
     "RGGB": np.array([[0, 1], [3, 2]], dtype=np.int8),
     "BGGR": np.array([[2, 3], [1, 0]], dtype=np.int8),
@@ -57,7 +57,7 @@ BAYER_PATTERNS: dict[str, np.ndarray] = {
     "GBRG": np.array([[3, 2], [0, 1]], dtype=np.int8),
 }
 
-# packed 4-plane 的通道约定（tools/fivek_build_cache.py 的打包顺序）：
+# packed 4-plane 的通道约定（tools/dataset/fivek_build_cache.py 的打包顺序）：
 # ch0=R, ch1=G(code1), ch2=G(code3), ch3=B。颜色码 -> plane 下标。
 _CODE_TO_PLANE = {0: 0, 1: 1, 3: 2, 2: 3}
 
@@ -135,7 +135,7 @@ def reconstruct_mosaic(raw4: np.ndarray, pattern: Union[str, np.ndarray]) -> np.
     """Bayer packed 4-plane -> full-resolution Bayer mosaic。
 
     输入 (4, h, w)：ch0=R, ch1=G(code1), ch2=G(code3), ch3=B（每平面为
-    mosaic 在对应 CFA 位置的 (h, w) 子采样，见 tools/fivek_build_cache.py
+    mosaic 在对应 CFA 位置的 (h, w) 子采样，见 tools/dataset/fivek_build_cache.py
     的打包逻辑）。按 pattern 的颜色码网格把各平面放回 (2h, 2w) 的
     对应 (i::2, j::2) 位置，恢复原始 mosaic。输出 float32。
     """

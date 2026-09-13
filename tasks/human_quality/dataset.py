@@ -1,6 +1,6 @@
 """FiveK cache dataset for the Human Quality task.
 
-Reads `.npz` files produced by `tools/fivek_build_cache.py`:
+Reads `.npz` files produced by `tools/dataset/fivek_build_cache.py`:
 
   raw    : (4, H/2, W/2) float16 in [0, 1]  — Bayer-packed 4-plane
            R, G(code1), G(code3), B, EXIF-upright, active-crop normalized
@@ -25,7 +25,7 @@ rebuilt cache fixes at generation time.)
 
 CFA pattern: the cache packs planes by color code, but WHERE each plane
 sits in the 2x2 CFA cell differs per camera (FiveK is ~74% RGGB, plus
-BGGR/GBRG/GRBG — see `tools/fivek_cfa_scan.py`). `cfa_json`
+BGGR/GBRG/GRBG — see `tools/dataset/fivek_cfa_scan.py`). `cfa_json`
 (auto-discovered as `cfa_pattern.json` next to the cache_dir) maps
 `<stem> → "RGGB"|"BGGR"|"GBRG"|"GRBG"` so mosaic reconstruction uses each
 file's true sensor pattern instead of a hardcoded arrangement. Stems
@@ -37,7 +37,7 @@ Split lists (one absolute path per line):
 
 Bad-sample exclusion: `alignment_threshold` (default 0.5) filters the split
 against `_alignment.json` inside the cache dir (produced by
-`tools/fivek_scan_cache.py`: corr(RGB3(raw), pooled target) per file).
+`tools/dataset/fivek_scan_cache.py`: corr(RGB3(raw), pooled target) per file).
 Files whose corr falls below the threshold are dropped at construction —
 their Expert-C TIFFs mismatch their DNGs (legacy data-source errors), so
 they can never form valid pairs. Files missing from the cache (e.g. the 42
@@ -46,7 +46,7 @@ same way. Set `alignment_threshold=0` to disable. `self.excluded` records
 what was dropped and why, for logging.
 
 Camera model (V3.1): `camera_json` (auto-discovered as `camera.json` next
-to the cache_dir; produced by `tools/fivek_camera_metadata.py`) maps
+to the cache_dir; produced by `tools/dataset/fivek_camera_metadata.py`) maps
 `<stem> → "<Make> <Model>"` from the DNG EXIF. Samples are tagged with an
 integer camera id (index into the sorted name list) so the camera-specific
 Learnable front ISP can select its parameter row. A missing file is not
@@ -172,7 +172,7 @@ class FiveKDataset(Dataset):
         """Drop files missing from the cache and misaligned pairs.
 
         Alignment scores come from `_alignment.json` in the cache dir
-        (auto-discovered; produced by `tools/fivek_scan_cache.py`). A file
+        (auto-discovered; produced by `tools/dataset/fivek_scan_cache.py`). A file
         is dropped when its score is below `alignment_threshold` (0 disables
         the check) or when no `.npz` exists for it (X-Trans / mirrored
         images skipped at rebuild time).

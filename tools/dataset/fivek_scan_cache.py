@@ -7,7 +7,7 @@ exclusion at train time (their Expert-C TIFFs mismatch the DNG — a legacy
 cache-generation error we cannot fix by rebuilding raw).
 
 Usage:
-    python tools/fivek_scan_cache.py --cache /home/jing/datasets/fivek/cache_expert_c \
+    python tools/dataset/fivek_scan_cache.py --cache /home/jing/datasets/fivek/cache_expert_c \
         [--threshold 0.5] [--workers 8]
 """
 from __future__ import annotations

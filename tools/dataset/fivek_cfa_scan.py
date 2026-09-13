@@ -2,12 +2,12 @@
 """Scan all FiveK DNGs for their CFA pattern (raw_pattern) distribution.
 
 Answers: are all raws RGGB? (No — Canon is RGGB, Nikon is often BGGR.)
-The cache packer (tools/fivek_build_cache.py) is pattern-agnostic: it packs
+The cache packer (tools/dataset/fivek_build_cache.py) is pattern-agnostic: it packs
 by color code into canonical R, G, G, B channels regardless of the sensor
 CFA, so downstream sees R,G,G,B either way.
 
 Usage:
-    python tools/fivek_cfa_scan.py [--raw-root DIR] [--workers 8]
+    python tools/dataset/fivek_cfa_scan.py [--raw-root DIR] [--workers 8]
 Output: experiments/fivek_cfa_scan/report.txt (+ per-camera cross-tab)
 """
 import argparse

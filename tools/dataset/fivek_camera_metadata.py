@@ -7,9 +7,9 @@ that `tasks.human_quality.dataset.FiveKDataset` auto-discovers as
 `camera.json` next to the cache_dir. The dataset turns the sorted name
 list into integer camera ids.
 
-One-time setup, same pattern as `tools/fivek_orientation_metadata.py`:
+One-time setup, same pattern as `tools/dataset/fivek_orientation_metadata.py`:
 
-    python tools/fivek_camera_metadata.py \
+    python tools/dataset/fivek_camera_metadata.py \
         --raw-root  /home/jing/datasets/fivek/fivek_dataset/raw_photos \
         --out       /home/jing/datasets/fivek/camera.json
 

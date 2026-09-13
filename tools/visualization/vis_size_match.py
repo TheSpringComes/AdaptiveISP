@@ -1,4 +1,4 @@
-"""tools/vis_size_match.py — FiveK raw/target 像素级尺寸对齐可视化.
+"""tools/visualization/vis_size_match.py — FiveK raw/target 像素级尺寸对齐可视化.
 
 验证 raw (4,H/2,W/2) 与 target (3,H,W) 是否严格 2x 对应,以及 demosaic 后
 是否与 target 像素级对齐. 每张样本一行:
@@ -11,8 +11,8 @@
 
 输出: experiments/vis_size_match/<tag>/size_match.png
 用法:
-    python tools/vis_size_match.py --n 4
-    python tools/vis_size_match.py --stems a0001-jmac_DSC1459 a0002-dgw_005
+    python tools/visualization/vis_size_match.py --n 4
+    python tools/visualization/vis_size_match.py --stems a0001-jmac_DSC1459 a0002-dgw_005
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-_ROOT = Path(__file__).resolve().parent.parent
+_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 

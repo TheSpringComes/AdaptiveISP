@@ -1,4 +1,4 @@
-"""tools/check_fivek_shapes.py — FiveK 缓存 raw/target 尺寸一致性审计.
+"""tools/dataset/check_fivek_shapes.py — FiveK 缓存 raw/target 尺寸一致性审计.
 
 检查点:
   1. 所有 npz: raw (4, h, w) 与 target (3, H, W) 是否严格满足 H=2h, W=2w
@@ -8,8 +8,8 @@
   3. 输出尺寸分布摘要 (常见分辨率).
 
 用法:
-    python tools/check_fivek_shapes.py
-    python tools/check_fivek_shapes.py --show-mismatch
+    python tools/dataset/check_fivek_shapes.py
+    python tools/dataset/check_fivek_shapes.py --show-mismatch
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from pathlib import Path
 
 import numpy as np
 
-_ROOT = Path(__file__).resolve().parent.parent
+_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 

@@ -1,4 +1,4 @@
-"""tools/vis_val_color.py — FiveK val 颜色链路 4 格对比可视化.
+"""tools/visualization/vis_val_color.py — FiveK val 颜色链路 4 格对比可视化.
 
 诊断 "呈现的颜色有问题" 究竟在哪一级引入。每张 val 样本一行四列:
 
@@ -19,9 +19,9 @@
 输出: experiments/vis_val_color/<tag>/val_color_grid.png (+ metrics.txt)
 
 用法:
-    python tools/vis_val_color.py --n 4
-    python tools/vis_val_color.py --n 6 --ckpt experiments/v31_stage1/ckpt/LearnableISP_iter_2500.pth
-    python tools/vis_val_color.py --stems a0001-jmac_DSC1459 a0006-IMG_2787
+    python tools/visualization/vis_val_color.py --n 4
+    python tools/visualization/vis_val_color.py --n 6 --ckpt experiments/v31_stage1/ckpt/LearnableISP_iter_2500.pth
+    python tools/visualization/vis_val_color.py --stems a0001-jmac_DSC1459 a0006-IMG_2787
 """
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-_ROOT = Path(__file__).resolve().parent.parent
+_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 

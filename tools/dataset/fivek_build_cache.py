@@ -21,7 +21,7 @@ EXIF-corrected TIFFs and is correct). The new cache needs no
 fix_rotation.json at all.
 
 Usage:
-    python tools/fivek_build_cache.py \
+    python tools/dataset/fivek_build_cache.py \
         --old-cache /home/jing/datasets/fivek/cache_expert_c \
         --raw-root  /home/jing/datasets/fivek/fivek_dataset/raw_photos \
         --out       /home/jing/datasets/fivek/cache_expert_c \

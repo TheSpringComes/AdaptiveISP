@@ -9,7 +9,7 @@
 #   | external | Infinite-ISP（需本地 clone）    | ✓           |
 #
 # 依赖：/home/jing/datasets/fivek/camera.json（若缺先生成：
-#   python tools/fivek_camera_metadata.py \
+#   python tools/dataset/fivek_camera_metadata.py \
 #     --raw-root /home/jing/datasets/fivek/fivek_dataset/raw_photos \
 #     --out    /home/jing/datasets/fivek/camera.json ）
 #
