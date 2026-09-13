@@ -271,6 +271,7 @@ def viz_human(
 
 def run_detection(
     ckpt: dict, cfg, exp_dir: Path, n_cases: int, device: torch.device,
+    case_start: int = 0,
 ) -> None:
     """Detection canary: LOD val split, YOLOv3 preds before/after."""
     from tasks.detection.implementations.yolov3 import YOLOv3Detection
@@ -325,8 +326,10 @@ def run_detection(
     out_dir.mkdir(exist_ok=True)
 
     for case_idx, (imgs, targets, paths, shapes, _hr) in enumerate(val_loader):
-        if case_idx >= n_cases:
+        if case_idx >= case_start + n_cases:
             break
+        if case_idx < case_start:
+            continue
         imgs = imgs.to(device).float()
         targets = targets.to(device)
         with torch.no_grad():
@@ -371,6 +374,7 @@ def run_detection(
 
 def run_human(
     ckpt: dict, cfg, exp_dir: Path, n_cases: int, device: torch.device,
+    case_start: int = 0,
 ) -> None:
     """Human canary: FiveK val, SSIM/LPIPS before/after + Expert C target."""
     from tasks.human_quality import FiveKDataset
@@ -401,7 +405,7 @@ def run_human(
     out_dir = exp_dir / "visualization"
     out_dir.mkdir(exist_ok=True)
 
-    for case_idx in range(min(n_cases, len(dataset))):
+    for case_idx in range(case_start, min(case_start + n_cases, len(dataset))):
         img, target, cam_id = dataset[case_idx]
         img = img.unsqueeze(0).to(device)
         target = target.unsqueeze(0).to(device)
@@ -438,6 +442,9 @@ def main() -> int:
     parser.add_argument("--cfg", type=Path, default=None,
                         help="explicit config yaml (defaults to any .yaml in exp-dir)")
     parser.add_argument("--n-cases", type=int, default=4)
+    parser.add_argument("--case-start", type=int, default=0,
+                        help="start index into the val dataset (default 0); "
+                             "use to render additional cases, e.g. --case-start 10")
     parser.add_argument("--task", type=str, default=None, choices=["detection", "human"],
                         help="force task type; otherwise auto-detected from ckpt")
     args = parser.parse_args()
@@ -467,9 +474,11 @@ def main() -> int:
     print(f"output dir: {args.exp_dir / 'visualization'}")
 
     if task == "human_quality" or task == "human":
-        run_human(ckpt, cfg, args.exp_dir, args.n_cases, device)
+        run_human(ckpt, cfg, args.exp_dir, args.n_cases, device,
+                  case_start=args.case_start)
     else:
-        run_detection(ckpt, cfg, args.exp_dir, args.n_cases, device)
+        run_detection(ckpt, cfg, args.exp_dir, args.n_cases, device,
+                      case_start=args.case_start)
 
     print("done.")
     return 0
