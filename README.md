@@ -1,257 +1,33 @@
-# AdaptiveISP V3 (SDI Refactor)
+# AdaptiveISP（V3.1）
 
-Re-implementation of **AdaptiveISP** (NeurIPS 2024) with V2-AI and V3 extensions.
-V1 is Wang et al. (2024)'s baseline (10 classical operators, Detection task);
-V2-AI adds 16 new operators (7 Samsung neural + 9 Infinite-ISP Torch-native),
-a learned STOP action, an exponential repeat penalty, a second downstream task
-(FiveK Human Quality), and an automatic post-val canary visualization.
-V3 introduces structured search space constraints and PPO-based training.
+基于强化学习的自适应 ISP 优化框架：RL Controller 逐步从算子库中挑选
+ISP 算子并回归其参数，以最大化下游任务指标（目标检测 / 人眼感知质量）。
+本仓库是对 [AdaptiveISP](https://github.com/OpenImagingLab/AdaptiveISP)
+（Wang et al., NeurIPS 2024）的模块化重写，并叠加了 Front ISP、动作
+约束、PPO 等扩展。
 
-> Wang Y., Xu T., Zhang F., Xue T., Gu J.,
-> *AdaptiveISP: Learning an Adaptive Image Signal Processor for Object Detection*,
-> NeurIPS 2024.
-> [Paper](https://arxiv.org/pdf/2410.22939) ·
-> [Project page](https://openimaginglab.github.io/AdaptiveISP/) ·
-> [Original repository](https://github.com/OpenImagingLab/AdaptiveISP)
+> **本文只描述当前版本（V3.1）的使用方式。** 各版本（V1 重构 → V2-AI
+> 算子/任务扩展 → V3 搜索结构 → V3.1 Front ISP）的动机、改动与历史
+> 实验结论见 [docs/VERSION_HISTORY.md](docs/VERSION_HISTORY.md)。
 
-The original implementation is a flat layout in which the RL agent, the ISP
-filters, the detection model, and the training loop share four top-level
-files. In this repository, we retain the same operator set, parameter ranges,
-and reinforcement-learning formulation of the original code, split them into
-six subsystems, and layer the V2-AI extensions on top. `docs/V1DESIGN.md`
-gives the V1 file-level mapping and lists the two intentional algorithmic
-deviations (see §7 Stage 2 there).
-
-On LOD, we observe **mAP@0.5 = 71.6** at 30 000 training iterations of V1
-(single seed, `experiments/lod-adaptiveisp_v1_lod_seed0/ckpt/DynamicISP_iter_30000.pth`),
-within 0.2 pts of the 71.4 reported at full training. Under the same
-evaluation script, YOLOv3 applied directly to the raw LOD images returns
-zero detections, indicating the recovered mAP is attributable to the
-learned pipeline rather than the detection backbone.
-
-## V2-AI at a glance
-
-**Operator bank: 10 → 26 ops.** Three provider families sit side-by-side
-in the search space, each with a stable prefix so `op_usage` columns don't
-drift across families:
-
-| Family | # | Path | Ops |
-|---|---:|---|---|
-| Classical (V1) | 10 | `isp/operators/` | `exposure gamma ccm sharpen denoise tone contrast saturation wnb whitebalance` |
-| Neural (Samsung Modular ISP) | 7 | `isp/learned/samsung_modular/` | `n_denoise n_awb n_gain n_gtm n_chroma n_gamma n_detail` — each `x + α·(F(x)−x)` with frozen backbone F |
-| Infinite-ISP-derived (Torch) | 9 | `isp/operators/infinite_isp/` | `inf_awb_{grayworld,norm2,pca} inf_digital_gain inf_ldci inf_unsharp inf_nlm inf_ebf inf_saturation` |
-
-**Learned STOP action + exponential repeat penalty.** The Controller's
-select_head outputs `n_ops + 1` logits; the extra column is a STOP action
-that submits the current pipeline. A per-op usage counter (`state.op_usage`
-is `int64` count, not bool bitmap) drives a repeat penalty
-`base × 2^prev_count`, so the second use of an op costs 2×, the third 4×,
-and so on. This prevents policy collapse into single-op loops that were
-common in V1 with the flat penalty.
-
-**Second task: Human Quality (FiveK + Expert C).** `tasks/human_quality/`
-provides a perceptual objective — terminal-only reward
-`R = Q(I_T) − Q(I_0)` where `Q = λ_ssim·SSIM − λ_lpips·LPIPS`. Both SSIM
-and LPIPS(AlexNet) are frozen. `HumanTrainer` runs full T-step rollouts
-per iter (no ReplayMemory).
-
-**Automatic canary visualization.** `tools/val.py` writes both mAP + PNGs
-in one shot — see [Evaluation](#evaluation) below.
-
-## V3 Extensions
-
-V3 introduces three structural improvements to the search space and training algorithm:
-
-**A1: Canonical Backbone.** A fixed ISP pipeline (AWB → CCM → GTM → Gamma) runs before the Controller, providing a reliable baseline RGB image. This reduces the search space from "RAW → task-optimized RGB" to "baseline RGB → task-optimized RGB", making the RL problem more tractable. Implemented in `front_isp/canonical.py` (legacy `canonical_backbone.enabled` in config still works; V3.1 supersedes it with the four-mode Front ISP, see below).
-
-**A2: Action Mask.** Dynamic constraints on the Controller's action space:
-- **No-repeat mask**: prevents selecting the same operator twice in a rollout
-- **Order mask**: enforces pipeline ordering (e.g., denoise before sharpen)
-- **Group budget mask**: limits total selections from related operator groups (e.g., at most 2 tonal adjustments)
-
-Implemented in `search/priors/action_mask.py`, controlled by `action_mask` block in config.
-
-**A3: PPO Training.** Replaces REINFORCE with Proximal Policy Optimization (PPO) for more stable training. Uses GAE(λ) advantage estimation, clipped surrogate objective, and value function baseline. Implemented in `controller/adaptiveisp/ppo.py`, controlled by `rl_algo.name: ppo` in config.
-
-### V3 Results
-
-**Human Quality (FiveK + Expert C, 25 epochs):**
-
-| Config | SSIM ↑ | LPIPS ↓ | Q ↑ | Rollout |
-|--------|--------|---------|-----|---------|
-| H0 (V2 baseline) | 0.593 | 0.407 | +0.186 | 1.00/8 |
-| H1 (+backbone) | 0.540 | 0.370 | +0.170 | 1.00/8 |
-| H2 (+mask) | 0.588 | 0.423 | +0.165 | 7.00/8 |
-| H3 (+PPO) | 0.616 | 0.374 | +0.242 | 6.96/8 |
-| **H3-s5-rew** | **0.605** | **0.318** | **+0.287** | 4.00/5 |
-
-H3-s5-rew uses `test_steps=5` with tuned reward shaping (stop_bonus=0.01, early_stop_penalty=2.0), achieving **Q=+0.287** (4.5pt above H3 baseline) with 37.5% less compute.
-
-**Detection (LOD, 25 epochs):** V3 shows negative transfer at this budget (E0=0.686, E1=0.604, E2=0.564, E3=0.597 mAP@0.5). The backbone constrains the Controller's ability to optimize for YOLOv3's specific feature requirements. Longer training (800 epochs) may recover performance.
-
-### V3 Configs and Scripts
-
-```bash
-# Detection ablation ladder (E0→E1→E2→E3)
-bash scripts/run_v3_ablation.sh
-
-# Human ablation ladder (H0→H1→H2→H3)
-bash scripts/run_v3_human_ablation.sh
-
-# H3-s5 variants (test_steps=5, lr/reward tuning)
-bash scripts/run_v3_human_s5_variants.sh
-```
-
-Configs:
-- `configs/adaptiveisp_v3_e{0,1,2,3}.yaml` — Detection ablation
-- `configs/adaptiveisp_human_v3_e{0,1,2,3}.yaml` — Human ablation
-- `configs/adaptiveisp_human_v3_e3_s5*.yaml` — H3-s5 variants
-
-## V3.1 Front ISP（四种统一模式）
-
-V3.1 重新整理 Front ISP：放在 AdaptiveISP 之前先做一次基础 ISP 处理，再把结果交给 RL Controller。WB / CCM / Gamma 这类基础处理不必让 RL 一步步搜索，可以提前用固定参数、训练参数或现有 ISP 完成；AdaptiveISP 保持原有逻辑，只负责 Front ISP 之后的算子选择与参数优化。
+## 整体流水线
 
 ```
-RAW → Input Adapter (Dataset layer: Bayer reconstruction per per-file CFA pattern
-      → demosaic 0.5*Malvar + 0.5*Bilinear → canonical linear RGB)
-    → Front ISP (identity | fixed | learnable | external) → Baseline RGB
-    → AdaptiveISP (Adaptive Tail, unchanged) → Task output
+RAW → Input Adapter（Dataset 层：按 per-file CFA 重建 Bayer
+      → demosaic 0.5×Malvar + 0.5×Bilinear → canonical linear RGB）
+    → Front ISP（identity | fixed | learnable | external）→ Baseline RGB
+    → AdaptiveISP（RL Controller 逐步选算子/参数 + STOP）→ Task
+      ├── Detection: LOD/COCO + YOLOv3 → mAP
+      └── Human Quality: FiveK vs Expert C → SSIM/LPIPS/Q
 ```
 
-统一四种模式（`front_isp.type`）：
+Front ISP 先用固定参数、离线拟合参数、可训练参数或现成开源 ISP 产生
+稳定的基础 RGB（WB / CCM / Gamma 这类基础处理不交给 RL 搜索）；
+AdaptiveISP 只负责其后的增量算子选择与参数优化。
 
-| type | 说明 | 实现位置 |
-|---|---|---|
-| `identity` | 不使用 Front ISP（对照组，旧名 `none`） | `front_isp/identity.py` |
-| `fixed` | FittedISP 拟合方法：色调指数 → CCM＋偏置 → 细节控制，全局共用一套参数。由 `tools/fit_front_isp.py` 用 FittedISP 的 IRLS 拟合方法在 FiveK 训练集上离线拟合一次（`configs/front_isp/fitted_fivek.json`），运行期完全固定 | `front_isp/fixed.py`（方法来自 `front_isp/FittedISP/`） |
-| `learnable` | 固定结构 + 可训练参数（WB gain / CCM / Bias / Gamma，camera-specific 参数表，**两阶段训练**：Stage 1 只训 Front ISP 并冻结；Stage 2 跑 AdaptiveISP。不联合训练 | `front_isp/learnable/` |
-| `external` | 接入现有开源 ISP：`backend: infinite_isp \| samsung_isp`。infinite_isp 使用 `third_party/InfiniteISP_RAW` 的已验证基线（传感器标定模块全关，支持 CPU/GPU），wrapper 参照其 `process_raw.py` 接入方式 | `front_isp/external.py` + wrappers |
+## 环境准备
 
-- **两阶段训练（learnable）**：Stage 1 `tools/train.py --task learnable`（loss = λ₁L1 + λ_s(1−SSIM) + λ_pLPIPS vs Expert C），保存 ckpt 并冻结；Stage 2 `--task human` 加载冻结的 Front ISP 跑 AdaptiveISP。不做联合训练，避免两部分同时变化后难以归因。
-- **消融四路对比**：不用（`adaptiveisp_human.yaml` baseline）/ 人工固定（`v31_fixed.yaml`）/ 学习参数（`v31_stage2.yaml`）/ 开源 ISP（`v31_external.yaml`）。看两个问题：Front ISP 有没有帮助；基础色彩问题前置解决后 RL 是否更容易训练。
-
-```bash
-# One-time: camera metadata for FiveK (camera ID per sample)
-python tools/dataset/fivek_camera_metadata.py \
-    --raw-root /home/jing/datasets/fivek/fivek_dataset/raw_photos \
-    --out      /home/jing/datasets/fivek/camera.json
-
-# Stage 1: learnable Front ISP pretrain (freeze after)
-python tools/train.py --task learnable \
-    --cfg configs/adaptiveisp_human_v31_pretrain.yaml \
-    --save_path v31_stage1 --epochs 5 --batch_size 8
-
-# Stage 2: AdaptiveISP with frozen learnable Front ISP
-python tools/train.py --task human \
-    --cfg configs/adaptiveisp_human_v31_stage2.yaml \
-    --save_path v31_stage2
-
-# 小规模验证：任意训练加 --max_iters N 截断迭代数
-```
-
-Configs: `v31_pretrain.yaml`（Stage 1）、`v31_stage2.yaml`（Stage 2，冻结加载 Stage-1 ckpt）、`v31_fixed.yaml`（fixed）、`v31_external.yaml`（external）。Legacy 类型名（none / canonical / infinite_isp / modular_neural_isp）保留为别名。Deliberately out of scope（future versions）：image-adaptive CCM、neural parameter predictors、RL-searched front-ISP params、local tone mapping。
-
-## Repository layout
-
-```
-isp/
-├─ base.py, registry.py         operator base + registry + CANONICAL_ORDER (26)
-├─ operators/                   10 classical ops
-├─ operators/infinite_isp/      9 Infinite-ISP-derived (Torch-native)
-├─ learned/samsung_modular/     7 Samsung Modular Neural ISP wrappers
-└─ third_party/modular_neural_isp/    gitignored; 172 MB Samsung code
-front_isp/                      V3.1 可插拔前置 ISP（四种统一模式）
-├─ identity.py                  identity（对照组，旧名 none）
-├─ fixed.py                     fixed：FittedISP 拟合方法（exponent/CCM/offset/detail）
-├─ FittedISP/                   FittedISP 拟合工具（fit.py/isp.py，独立可运行）
-├─ learnable/                   learnable：可训练 WB/CCM/Bias/Gamma（两阶段训练）
-├─ canonical.py                 legacy 固定链（V3-A1）
-├─ external.py                  external：backend 分发（infinite_isp | samsung_isp）
-├─ infinite_isp/                InfiniteISP_RAW 基线 wrapper（参照 process_raw.py）
-└─ raw_adapter.py               Input Adapter：Bayer 重建 → demosaic → linear RGB
-controller/adaptiveisp/         Controller + STOP head + Reward + HumanReward + PPO
-pipeline/                       PipelineState (op_usage: int64) + Executor + TrajectoryBuffer
-search/
-├─ space.py                     SearchSpace (composes priors)
-└─ priors/action_mask.py        NoRepeatMask, OrderMask, GroupBudgetMask
-tasks/
-├─ detection/                   YOLOv3 wrapper + ReplayMemory + LOD/COCO loaders
-├─ human_quality/               FiveK dataset + SSIM/LPIPS metrics + Task
-└─ third_party/yolov3/          vendored
-engine/
-├─ trainer.py                   Detection (1-iter-1-step + ReplayMemory, or PPO)
-├─ trainer_human.py             Human Stage 2 (full T-step rollout per iter, or PPO)
-├─ trainer_learnable.py         Human Stage 1 (learnable Front ISP pretrain)
-└─ evaluator.py                 mAP + auto-viz
-configs/                        adaptiveisp.yaml (main) + V3/V3.1 ablation variants
-tools/
-├─ train.py                     training CLI (`--task {detection,human,learnable}`)
-├─ val.py                       mAP + auto-viz CLI
-├─ fivek_build_cache.py         Expert-C cache build（4-plane pack）
-├─ fivek_cfa_scan.py            全量 DNG CFA pattern 扫描
-├─ verify_raw_adapter.py        Input Adapter 验证套件（rawpy 真值对拍）
-├─ vis_val_color.py             颜色链路 4 格诊断可视化
-├─ preview.py                   单样本 Front ISP 对比预览
-└─ visualization/visualizer.py  standalone canary tool
-scripts/
-├─ run_ablations.sh             V2 ablation orchestrator
-├─ run_v3_ablation.sh           V3 Detection ablation ladder
-├─ run_v3_human_ablation.sh     V3 Human ablation ladder
-├─ run_v3_human_s5_variants.sh  H3-s5 variant sweep
-├─ run_v31_ablation.sh          V3.1 Front ISP 四模式消融（支持 --smoke）
-└─ val_v3_ablation.sh           V3 val runner
-debug/smoke/                    8 smoke tests (imports, ops, pipeline, front_isp,
-                                learnable, controller, e2e, human_quality e2e)
-docs/V1DESIGN.md                V1 architecture doc
-```
-
-## FiveK cache (Human Quality task)
-
-The Expert-C cache is generated by `tools/dataset/fivek_build_cache.py` from the local
-DNG corpus + the old cache's targets:
-
-```bash
-# raw plane: DNG mosaic → per-CFA black/white normalize → R,G,G,B pack →
-#            EXIF flip applied (0→k0, 5→k1, 6→k3, 3→k2) → INTER_AREA resize
-# target:    copied verbatim from the old cache (EXIF-corrected TIFFs)
-python tools/dataset/fivek_build_cache.py \
-    --old-cache /home/jing/datasets/fivek/cache_expert_c_old \
-    --raw-root  /home/jing/datasets/fivek/fivek_dataset/raw_photos \
-    --out       /home/jing/datasets/fivek/cache_expert_c
-
-# post-hoc alignment audit → cache_dir/_alignment.json
-python tools/dataset/fivek_scan_cache.py --cache /home/jing/datasets/fivek/cache_expert_c
-```
-
-Both planes are stored upright — no load-time rotation. `FiveKDataset`
-auto-filters the split against `_alignment.json` (drops raw/target pairs whose
-correlation is below 0.5 — legacy TIFF/DNG mismatches) and files absent from
-the cache (42 X-Trans / mirrored-flip images skipped at build). Current
-counts: train 4818/4894, val 97/100, 35 cameras (`camera.json`).
-
-**CFA pattern metadata.** The cache packs planes by color code, so the 2×2
-CFA arrangement per file is needed at load time for Bayer reconstruction:
-
-```bash
-# 全量 DNG pattern 扫描 → /home/jing/datasets/fivek/cfa_pattern.json
-python tools/dataset/fivek_cfa_scan.py
-# FiveK 实测分布（5000 DNG）：RGGB 3715 / BGGR 675 / GBRG 451 / GRBG 111
-```
-
-At load time the Input Adapter (`front_isp/raw_adapter.py`) reconstructs the
-full-resolution mosaic per the file's true pattern, then demosaics
-(0.5×Malvar + 0.5×Bilinear) into canonical linear RGB — so `FiveKDataset`
-returns **full-resolution** `(3, H, W)` linear image paired with the
-full-res sRGB target. See `tools/dataset/verify_raw_adapter.py` for the validation
-suite (17/17 checks incl. rawpy ground-truth comparison per pattern).
-
-⚠️ All pre-rebuild experiments (v2ai_*, v3_h*, lod-*, v31_*) were trained on
-the misaligned cache and live in `experiments_archive_polluted_data/` /
-`experiments/` — their numbers are not comparable to new-data runs.
-
-## Setup
-
-Tested with Python 3.10, torch 2.6+, torchvision 0.25+.
+测试环境：Python 3.10+，torch 2.x + CUDA（本机实测 torch 2.10 / cu128）。
 
 ```bash
 conda create -n adaptiveisp python=3.10
@@ -259,197 +35,288 @@ conda activate adaptiveisp
 pip install -r requirements.txt
 ```
 
-**YOLOv3 backbone (Detection task).** Place at `pretrained/yolov3.pt`
-([download link](https://github.com/OpenImagingLab/AdaptiveISP/releases/download/v1.0/yolov3.pt)).
+**数据与权重**（`configs/*.yaml` 里的路径均为本机绝对路径，按需修改）：
 
-**LOD dataset (Detection).** Download from
-[Baidu Drive](https://pan.baidu.com/s/1J0tLRr4IcxPxogcoKKs3Hw?pwd=nips)
-or [OneDrive](https://1drv.ms/u/s!Aq1PSygduHX9czHB9WkUNUTUx8o?e=KURDwo),
-unzip, set `path:` in `tasks/third_party/yolov3/data/lod.yaml`.
+| 资产 | 用途 | 位置 / 准备方式 |
+|---|---|---|
+| YOLOv3 权重 | Detection 任务 | `pretrained/yolov3.pt`（[下载](https://github.com/OpenImagingLab/AdaptiveISP/releases/download/v1.0/yolov3.pt)） |
+| LOD 数据集 | Detection 任务 | [百度网盘](https://pan.baidu.com/s/1J0tLRr4IcxPxogcoKKs3Hw?pwd=nips) / [OneDrive](https://1drv.ms/u/s!Aq1PSygduHX9czHB9WkUNUTUx8o?e=KURDwo)，路径写在 `tasks/third_party/yolov3/data/lod.yaml` |
+| FiveK Expert-C cache | Human 任务 | `human_quality:` 配置块，默认 `/home/jing/datasets/fivek`（构建见[下文](#fivek-数据准备human-任务)） |
+| Samsung Modular Neural ISP | `n_*` 算子 / `samsung_isp` 前端 | `git clone https://github.com/SamsungLabs/modular_neural_isp isp/third_party/modular_neural_isp`（含权重，~172 MB，gitignored） |
+| InfiniteISP_RAW | `infinite_isp` 前端 | `front_isp/third_party/InfiniteISP_RAW`（上游 Infinite-ISP 整理版 + 已验证基线配置；wrapper 缺仓库时报错会给指引） |
 
-**FiveK + Expert C (Human Quality).** Sample lists at
-`<fivek_root>/{train,val}_expert_c.txt` referencing `.npz` frames
-(Bayer4-packed raw + full-res Expert-C sRGB target). Path is set via
-`human_quality.fivek_root` in the config yaml
-(defaults to `/home/jing/datasets/fivek`).
-
-**Samsung Modular Neural ISP (Neural operators).** Vendored under
-`isp/third_party/modular_neural_isp/` (gitignored, 172 MB). Only needed
-if you enable any `n_*` op in the config.
-
-## Training
-
-### Detection (LOD, V1 baseline recipe with V2-AI extensions active)
+冒烟测试（无数据、无权重、< 60s；改完代码先跑这个）：
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python tools/train.py --task detection \
-    --data_name lod \
-    --data_cfg tasks/third_party/yolov3/data/lod.yaml \
-    --batch_size 8 --epochs 800 \
-    --save_path adaptiveisp_lod --seed 0
+bash debug/smoke/run.sh    # 7 项：imports / operators / pipeline / front_isp
+                           # / learnable / controller / e2e
 ```
 
-Checkpoints land at `experiments/lod-adaptiveisp_lod/ckpt/DynamicISP_iter_*.pth`
-every 1 000 iters, in schema `{'controller_model', 'optimizer', 'iter', 'operators'}`.
+## 训练
 
-### Human Quality (FiveK + Expert C)
+统一入口 `tools/train.py`，`--task` 选 trainer：
+
+| `--task` | Trainer | 用途 |
+|---|---|---|
+| `detection` | `engine/trainer.py` | LOD/COCO + YOLOv3，1-step TD + ReplayMemory（或 PPO） |
+| `human` | `engine/trainer_human.py` | FiveK vs Expert C，每 iter 完整 T 步 rollout |
+| `learnable` | `engine/trainer_learnable.py` | Front ISP Stage 1 预训练（只训 Front ISP 参数） |
+
+产物落在 `experiments/<save_path>/`：`ckpt/`（每 `save_model_freq` iters
+一个）、`logs/`（log.txt + TensorBoard）、`images/`、启动时复制的 config
+副本；Human 任务结束时额外写 `final_val.json`（val 指标 + 全程算子选择
+累计）。Detection 的 `save_path` 会自动加 `data_name-` 前缀。
+
+### Human Quality（FiveK + Expert C）
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python tools/train.py --task human \
-    --batch_size 4 --epochs 30 --imgsz 512 \
-    --save_path v2ai_human --cfg configs/adaptiveisp_human.yaml
+# 基线（无 Front ISP，identity）
+python tools/train.py --task human \
+    --cfg configs/adaptiveisp_human.yaml \
+    --save_path my_human --batch_size 4 --epochs 25 --imgsz 512
+
+# fixed Front ISP（FittedISP 离线拟合参数，见下文"重新拟合"）
+python tools/train.py --task human \
+    --cfg configs/adaptiveisp_human_v31_fixed.yaml --save_path v31_fixed
+
+# learnable Front ISP（两阶段）
+python tools/train.py --task learnable \
+    --cfg configs/adaptiveisp_human_v31_pretrain.yaml \
+    --save_path v31_stage1 --epochs 5 --batch_size 8   # Stage 1: 只训 Front ISP
+python tools/train.py --task human \
+    --cfg configs/adaptiveisp_human_v31_stage2.yaml \
+    --save_path v31_stage2                              # Stage 2: 冻结 Front ISP 跑 RL
+                                                        # （ckpt 路径写在 cfg 的
+                                                        #  front_isp.learnable.ckpt）
+
+# external Front ISP（infinite_isp / samsung_isp）
+python tools/train.py --task human \
+    --cfg configs/adaptiveisp_human_v31_external.yaml --save_path v31_external
 ```
 
-Same schema plus `'task': 'human_quality'`. `HumanTrainer` runs a
-full-episode rollout per iter (one `.backward()` covering all T steps),
-and the terminal `Q(I_T) − Q(I_0)` is the only non-zero task_delta.
+小规模验证：任意训练加 `--max_iters N` 截断迭代数（如 `--max_iters 40`）。
 
-### V3 Training
-
-V3 configs enable the canonical backbone, action masks, and/or PPO:
+### Detection（LOD）
 
 ```bash
-# V3 Human E3 (backbone + mask + PPO)
-CUDA_VISIBLE_DEVICES=0 python tools/train.py --task human \
-    --batch_size 4 --epochs 25 --imgsz 512 \
-    --save_path v3_h3 --cfg configs/adaptiveisp_human_v3_e3.yaml
-
-# V3 Human E3 with test_steps=5 (faster, tuned reward)
-CUDA_VISIBLE_DEVICES=0 python tools/train.py --task human \
-    --batch_size 4 --epochs 25 --imgsz 512 \
-    --save_path v3_h3_s5 --cfg configs/adaptiveisp_human_v3_e3_s5_rew.yaml
-
-# V3 Detection E3 (backbone + mask + PPO)
-CUDA_VISIBLE_DEVICES=0 python tools/train.py --task detection \
-    --data_name lod \
-    --data_cfg tasks/third_party/yolov3/data/lod.yaml \
-    --batch_size 4 --epochs 25 --imgsz 512 \
-    --save_path v3_e3 --cfg configs/adaptiveisp_v3_e3.yaml
+python tools/train.py --task detection \
+    --data_name lod --data_cfg tasks/third_party/yolov3/data/lod.yaml \
+    --cfg configs/adaptiveisp.yaml \
+    --batch_size 8 --epochs 800 --save_path my_lod --seed 0
+# ckpt → experiments/lod-my_lod/ckpt/DynamicISP_iter_*.pth
 ```
 
-Key config knobs:
-- `front_isp.type: identity | fixed | learnable | external` — V3.1 统一 Front ISP 模式（legacy `canonical_backbone.enabled` 仍可用）
-- `action_mask.no_repeat.enabled: true` — prevent op reuse
-- `action_mask.order.enabled: true` — enforce pipeline ordering
-- `action_mask.group_budget.enabled: true` — limit group selections
-- `rl_algo.name: ppo` — use PPO instead of REINFORCE
-- `test_steps: 5` — rollout length (default 8)
-- `min_rollout_length: 3` — minimum steps before STOP is allowed
+### 关键配置项（`configs/adaptiveisp.yaml` 为完整参考）
 
-### What the print block shows
+```yaml
+front_isp:
+  enabled: true
+  type: identity | fixed | learnable | external   # 四种模式，见下表
+  # 各模式自己的内部配置（fixed.params / learnable.* / external.backend ...）
 
-Every `print_freq` iters, both trainers print (windowed since last print):
+action_mask:            # V3 动作约束（默认全关 = 无约束）
+  no_repeat:  {enabled: false}        # 禁止同一算子二次选择（exempt 白名单）
+  order:      {enabled: false, rules: []}   # before/after 顺序约束
+  group_budget: {enabled: false, groups: []} # 相关算子组配额
+
+rl_algo:
+  name: actor_critic | ppo            # ppo = T-step rollout + GAE + clip
+
+test_steps: 8            # rollout 长度
+min_rollout_length: 1    # 最少步数（之前禁用 STOP）
+```
+
+四种 Front ISP 模式：
+
+| type | 说明 | 实现 |
+|---|---|---|
+| `identity` | 不用 Front ISP（对照组；旧名 `none`） | `front_isp/identity.py` |
+| `fixed` | FittedISP 拟合方法（色调指数 → CCM+偏置 → 细节控制），全局一套参数，运行期完全固定。参数由 `tools/fit_front_isp.py` 离线拟合，存于 `configs/front_isp/fitted_fivek.json` | `front_isp/fixed.py`（方法来自 `front_isp/FittedISP/`） |
+| `learnable` | 可训练 WB gain / CCM / Bias / Gamma，camera-specific 参数表。**两阶段**：Stage 1 只训 Front ISP 并冻结，Stage 2 跑 AdaptiveISP，不联合训练 | `front_isp/learnable/` |
+| `external` | 现成开源 ISP：`backend: infinite_isp \| samsung_isp`，wrapper 统一输入输出 | `front_isp/external.py` + wrappers |
+
+legacy 类型名（`none` / `canonical` / `infinite_isp` / `modular_neural_isp`）
+与旧键 `canonical_backbone.enabled` 仍可用。
+
+### 训练日志怎么看
+
+每 `print_freq` iters 打一个块（Human 分支；Detection 格式相同，loss 行
+为 `agent/val/detect/reward`，example 行为 canary/batch/fresh 三条
+eval-argmax shadow rollout）：
 
 ```
 ----- iter N/M [HH:MM:SS] elapsed T | X.XX it/s | ETA T -----
-  loss     agent=... val=... detect=... reward=+...        # Detection
-  loss     agent=... val=... Q_0=+... Q_T=+... ΔQ=+... SSIM=... LPIPS=...  # Human
+  loss     agent=... val=... Q_0=+... Q_T=+... ΔQ=+... SSIM=... LPIPS=...
   reward   task=+... ent=-... use=-... estop=-... ovfl=-... [stop+=+...] [runt=-...]
   policy   entropy=X.XXX/log(n+1)  argmax=XX%  stop=XX% (learned=XX%, timelimit=XX%)
-  example  eval-argmax shadow rollouts (canary / batch / fresh)
-  ops      window(N) top: exposure:12 whitebalance:8 ...   cum neural NN/NN = X%
+  example  sample 0  Q_0=+... → Q_T=+... (ΔQ=+...)
+           picks: exposure(0.42) → n_gamma(0.71) → STOP
+  ops      window(N) top: exposure:12 whitebalance:8 ...
+           cum neural NN/NN = X%
 ```
 
-`reward` breaks the total into 5 components (+ optional `stop+`, `runt`);
-`policy` reports mean entropy vs its ceiling, argmax-match rate
-(exploring vs locked-in), and STOP breakdown into learned vs time-limit.
+- `reward`：总奖励按 task 增量 / 熵惩罚 / 使用惩罚 / 早停惩罚 / 溢出
+  惩罚（+可选 stop bonus、runtime 惩罚）分解；
+- `policy`：熵 vs 上限、argmax 命中率（探索 vs 锁定）、STOP 里 learned
+  vs 到时强制停的占比；
+- `example`：sample 0 的完整算子序列（带首参数）；
+- `ops`：窗口内选择频次 top6 + neural 算子累计占比。
 
-## Evaluation
+## 评估
 
-`tools/val.py` runs the eval loop AND writes canary PNGs in one shot.
-The eval loop auto-routes on the ckpt's `task` field:
+`tools/val.py` 按 ckpt 的 `task` 字段自动路由，一次跑出指标 + canary
+可视化 PNG（落盘在 ckpt 所在实验目录的 `visualization/` 下）：
 
-  - `detection` (V1 default) — mAP against LOD/COCO
-  - `human_quality` — SSIM / LPIPS / Q + rollout length + learned-STOP pct
-    against FiveK val
-
-Text artifacts (`val_log.txt` for both branches, plus `records.txt` for
-detection) land under `<project>/<name>/`; the canary PNGs land under the
-checkpoint's own experiment folder (`experiments/<exp>/visualization/`),
-so they sit next to the ckpt and cfg that produced them.
-
-**Detection:**
 ```bash
-CUDA_VISIBLE_DEVICES=0 python tools/val.py \
+# Human（FiveK 路径来自 ckpt 目录里的 cfg 副本，无需 --data/--weights）
+python tools/val.py \
+    --isp_weights experiments/v31_fixed/ckpt/HumanISP_iter_1000.pth \
+    --cfg_file experiments/v31_fixed/adaptiveisp_human_v31_fixed.yaml \
+    --project val_results --name v31_fixed_val --exist-ok
+
+# Detection
+python tools/val.py \
+    --isp_weights experiments/lod-my_lod/ckpt/DynamicISP_iter_30000.pth \
     --weights pretrained/yolov3.pt \
-    --isp_weights experiments/lod-adaptiveisp_lod/ckpt/DynamicISP_iter_30000.pth \
-    --data_name lod \
-    --data tasks/third_party/yolov3/data/lod.yaml \
-    --imgsz 512 --batch-size 1 --steps 5 \
+    --data tasks/third_party/yolov3/data/lod.yaml --data_name lod \
     --cfg_file configs/adaptiveisp.yaml \
-    --project val_results --name my_run --exist-ok
+    --project val_results --name lod_val --exist-ok
 ```
 
-Output:
-```
-                 Class     Images  Instances     P     R  mAP50  mAP75  mAP50-95
-                   all        100        250 0.712 0.634  0.706  0.412      0.30
-visualization: 4 cases (8 PNGs) → experiments/lod-adaptiveisp_lod/visualization/
-```
+Human 输出（val_log.txt 同步落盘）：
 
-**Human Quality:** (FiveK paths come from the cfg's `human_quality:` block,
-so no `--data`/`--weights`/`--data_name` needed)
-```bash
-CUDA_VISIBLE_DEVICES=0 python tools/val.py \
-    --isp_weights experiments/v2ai_human/ckpt/HumanISP_iter_28000.pth \
-    --cfg_file experiments/v2ai_human/adaptiveisp_human.yaml \
-    --project val_results --name v2ai_human_iter28000 --exist-ok
-```
-
-Output:
 ```
 ===== VAL (Human Quality) =====
-  samples: 100
+  samples: 97
   SSIM:  0.xxxx
   LPIPS: 0.xxxx
+  PSNR:  XX.XX dB   ΔE76: XX.XX
   Q:     +0.xxxx
   mean rollout length: X.XX/8
   pct learned-STOP (before time-limit): XX.X%
 ===============================
-visualization: 4 cases (8 PNGs) → experiments/v2ai_human/visualization/
 ```
 
-Flags (both branches): `--skip_viz` (numbers only), `--viz_cases N` (default 4).
+通用 flag：`--skip_viz`（只要数字）、`--viz_cases N`（默认 4 张）。
 
-**Standalone visualizer** — for a ckpt you don't want to re-eval:
-```bash
-python -m tools.visualization.visualizer --exp-dir experiments/lod-adaptiveisp_lod --n-cases 4
-```
-
-## Ablation infrastructure
-
-`configs/` ships the V3 / V3.1 ablation variants (`adaptiveisp_v3_e*.yaml`,
-`adaptiveisp_human_v3_e*.yaml`, `adaptiveisp_human_v31_*.yaml`). Orchestrators:
+**免重评估的可视化**（对已有 ckpt 单独出 canary 图）：
 
 ```bash
-bash scripts/run_v3_ablation.sh                 # detection E0–E3
-bash scripts/run_v3_human_ablation.sh           # human H0–H3
-bash scripts/run_v3_human_s5_variants.sh        # H3 test_steps=5 variants
-bash scripts/run_v31_ablation.sh                # V3.1 Front-ISP A–E
-python scripts/summarize_ablations.py           # markdown table from logs
+python -m tools.visualization.visualizer --exp-dir experiments/v31_fixed --n-cases 4
+# --case-start 10 可增量渲染后续样本；--ckpt/--cfg 可显式指定
 ```
 
-## Reproducibility
+## 消融设施（V3.1 五组 A–E）
 
-`--seed <int>` seeds `random`, `numpy`, `torch` (CPU + CUDA), and
-`PYTHONHASHSEED`, and enables cuDNN deterministic mode (in
-`engine/util.set_seed`).
+`scripts/run_ablation_v31.sh` 串行跑五组（约 9h，统一 Stage 2 预算
+1000 iters）：A identity / B fixed / C learnable 两阶段 / D external-infinite /
+E external-samsung；每组结束自动落盘 `final_val.json`。
 
-The refactor targets experiment-level reproduction: the mAP obtained by
-the refactored code on a given seed and configuration is expected to fall
-within the variance band reported for the same configuration by the
-original implementation, rather than to reproduce loss trajectories
-bit-for-bit. See `docs/V1DESIGN.md` §7 Stage 2 for the two deliberate V1
-deviations. `configs/adaptiveisp.yaml` is the sole source of
-hyperparameters; a copy is written into each experiment directory at
-training start.
+```bash
+bash scripts/run_ablation_v31.sh
+python tools/eval_front_isp.py              # 各组 Front ISP 输出质量 →
+                                            # experiments/front_isp_eval/summary.json
+python scripts/summarize_ablation_v31.py    # 汇总三张表 → experiments/ablation_summary.md
+```
 
-The two pretrained checkpoints released by Wang et al. (2024)
-(`ckpt-lod-df-1.0` and `ckpt-lod-df-0.98`) use the pre-refactor schema
-(`agent_model` key) and are not directly loadable by `tools/val.py`. Use
-git tag `v0-baseline` to evaluate them.
+当前 cache 上这套消融的完整结果与五条主要发现见
+[docs/VERSION_HISTORY.md §4](docs/VERSION_HISTORY.md#4-v31--front-isp-四模式当前版本)。
 
-## Citation
+仍随库发行的 V3 历史消融脚本：`scripts/run_v3_ablation.sh`（detection
+E0–E3）、`scripts/run_v3_human_ablation.sh`（human H0–H3）、
+`scripts/run_v3_human_s5_variants.sh`（H3-s5 变体）、
+`scripts/val_v3_ablation.sh`、`scripts/summarize_ablations.py`。
+
+## FiveK 数据准备（Human 任务）
+
+Human 任务读 `human_quality:` 配置块指向的 cache（`.npz`：raw 4-plane
+Bayer pack + 全分辨率 Expert-C sRGB target，均为 EXIF-upright）。
+首次构建三步：
+
+```bash
+# 1. 重建 cache（raw 平面按 per-CFA 黑白电平归一化 + EXIF 翻转；
+#    target 从旧 cache 原样复制）+ 对齐审计 _alignment.json
+python tools/dataset/fivek_build_cache.py \
+    --old-cache <旧cache目录> \
+    --raw-root  /home/jing/datasets/fivek/fivek_dataset/raw_photos \
+    --out       /home/jing/datasets/fivek/cache_expert_c
+python tools/dataset/fivek_scan_cache.py --cache /home/jing/datasets/fivek/cache_expert_c
+
+# 2. 相机型号表 camera.json（stem → "Make Model"，learnable 模式
+#    camera-specific 参数表 & dataset 相机 id 依赖它）
+python tools/dataset/fivek_camera_metadata.py \
+    --raw-root /home/jing/datasets/fivek/fivek_dataset/raw_photos \
+    --out      /home/jing/datasets/fivek/camera.json
+
+# 3. CFA 分布扫描（5000 DNG：RGGB 3715 / BGGR 675 / GBRG 451 / GRBG 111）
+#    产出 per_file.json，复制到 cache 上级目录作为 cfa_pattern.json
+#    （dataset 自动发现，Bayer 重建按每文件真实 pattern）
+python tools/dataset/fivek_cfa_scan.py
+cp experiments/fivek_cfa_scan/per_file.json /home/jing/datasets/fivek/cfa_pattern.json
+```
+
+`FiveKDataset` 加载时自动按 `_alignment.json` 过滤错配样本、跳过 cache
+缺失文件（当前计数：train 4818/4894，val 97/100，35 台相机），
+Input Adapter（`front_isp/raw_adapter.py`）做 Bayer 重建 + demosaic，
+输出全分辨率 `(3, H, W)` 线性 RGB。
+
+数据链路诊断工具：
+
+| 工具 | 用途 |
+|---|---|
+| `tools/dataset/verify_raw_adapter.py` | Input Adapter 验证套件（17/17 检查，含 rawpy 真值对拍） |
+| `tools/dataset/check_fivek_shapes.py` | raw/target 尺寸 2× 对齐审计 |
+| `tools/visualization/preview.py` | 抽样 raw/target 对 + corr 直方图 |
+| `tools/visualization/vis_val_color.py` | 颜色链路 4 格诊断（Adapter 直出 / 各 Front ISP / target） |
+| `tools/visualization/vis_size_match.py` | 像素级尺寸对齐可视化 |
+
+fixed Front ISP 重新拟合（改了训练集/拟合超参后）：
+
+```bash
+python tools/fit_front_isp.py    # → configs/front_isp/fitted_fivek.json
+                                #   + experiments/fixed_fit/report.json
+```
+
+## 目录结构
+
+```
+isp/                             算子库（26 算子 + 注册表 + CANONICAL_ORDER）
+├─ operators/                    10 经典算子 + infinite_isp/ 9 个衍生算子
+├─ learned/samsung_modular/      7 个 Samsung neural 算子 wrapper
+└─ third_party/modular_neural_isp/   gitignored，需自行 clone
+front_isp/                       可插拔前置 ISP（V3.1 四模式）
+├─ identity.py fixed.py external.py   三种模式 + legacy canonical.py
+├─ learnable/                    learnable 模式（两阶段训练）
+├─ infinite_isp/ modular_neural_isp/  external 后端 wrapper
+├─ FittedISP/                    fixed 模式的拟合方法（独立可运行）
+├─ raw_adapter.py                Input Adapter：Bayer 重建 → demosaic → linear RGB
+└─ third_party/                  gitignored 第三方 clone（InfiniteISP_RAW 等）
+controller/adaptiveisp/          Controller + STOP head + Reward + HumanReward + PPO
+pipeline/                        PipelineState / PipelineExecutor / TrajectoryBuffer
+search/                          SearchSpace + priors（action_mask 三类约束）
+tasks/
+├─ detection/                    YOLOv3 wrapper + ReplayMemory + LOD/COCO loader
+├─ human_quality/                FiveKDataset + SSIM/LPIPS/PSNR/ΔE76 + Task
+└─ third_party/yolov3/           vendored YOLOv3
+engine/                          trainers（detection/human/learnable）+ evaluator + util
+configs/                         adaptiveisp.yaml（全量参考）+ human/v31/v3 变体
+tools/                           train.py / val.py / eval_front_isp.py / fit_front_isp.py
+│                                dataset/（cache·camera·cfa·验证） visualization/
+scripts/                         消融驱动与汇总脚本
+debug/smoke/                     7 项冒烟测试（run.sh 一键）
+docs/                            VERSION_HISTORY.md（版本历史）· V1DESIGN.md
+```
+
+## 可复现性
+
+`--seed` 统一播种 `random` / `numpy` / `torch`（CPU+CUDA）/
+`PYTHONHASHSEED` 并启用 cuDNN deterministic（`engine/util.set_seed`）。
+实验级复现：同 seed 同配置的 mAP 落在原实现的方差带内即可，不追求
+逐位一致的 loss 轨迹。`configs/*.yaml` 是实验定义的唯一来源，训练启动
+时自动复制进实验目录；环境类参数（`--workers` / `--seed` / 权重与数据
+路径）留在 CLI。
+
+## 引用
 
 ```bibtex
 @inproceedings{wang2024adaptiveisp,
@@ -460,20 +327,15 @@ git tag `v0-baseline` to evaluate them.
 }
 ```
 
-## Acknowledgements
+## 致谢
 
-We build directly on [AdaptiveISP](https://github.com/OpenImagingLab/AdaptiveISP)
-by Wang et al. (2024). The LOD dataset is from
-[LODDataset](https://github.com/ying-fu/LODDataset); the detection
-backbone is vendored from
-[Ultralytics YOLOv3](https://github.com/ultralytics/yolov3) under
-`tasks/third_party/yolov3/`. The Samsung neural operators wrap
-[Modular Neural ISP](https://github.com/SamsungLabs/modular-neural-isp)
-(Afifi et al., SIGGRAPH Asia 2026); the classical Infinite-ISP-derived
-operators are Torch-native reimplementations of algorithms from
-[Infinite-ISP](https://github.com/10x-Engineers/Infinite-ISP) by
-10x-Engineers. The external `infinite_isp` front-end wraps the
-upstream Infinite-ISP pipeline via `front_isp/third_party/InfiniteISP_RAW`
-(algorithm files identical to upstream, plus a verified sensor-agnostic
-baseline config), and the `fixed` front-end implements the fitting method
-from `front_isp/FittedISP` (auto-fitted global ISP).
+直接构建于 [AdaptiveISP](https://github.com/OpenImagingLab/AdaptiveISP)
+（Wang et al., 2024）。LOD 数据集来自
+[LODDataset](https://github.com/ying-fu/LODDataset)；检测 backbone
+vendored 自 [Ultralytics YOLOv3](https://github.com/ultralytics/yolov3)；
+Samsung neural 算子与 `samsung_isp` 前端包装
+[Modular Neural ISP](https://github.com/SamsungLabs/modular_neural_isp)；
+`infinite_isp` 前端与 `inf_*` 算子源自
+[Infinite-ISP](https://github.com/10x-Engineers/Infinite-ISP)（10x-Engineers）；
+fixed 前端使用内置的 FittedISP 拟合工具（`front_isp/FittedISP/`，
+NumPy 实现的 IRLS 全局 ISP 拟合方法）。
