@@ -13,21 +13,19 @@
 # 产出：experiments/v31_stage1/ckpt/LearnableISP_iter_*.pth
 #（含 front_isp 标定 state + camera_names），供 Stage 2 加载后冻结。
 #
-# 小规模验证：加 --max_iters 40（配合 save_model_freq: 20）。
+# 本文件不继承 base/human.yaml：LearnableTrainer 不消费 RL/算子/奖励键，
+# 继承只会引入无关语义。小规模验证加 --max_iters 40（配合 save_model_freq: 20）。
 
 operators:   # LearnableTrainer 不用算子，但 load_config 需要
   - exposure
   - gamma
 
-# ---------- Front ISP: learnable（V3.1 模式之三） ----------
-# demosaic 已在 Input Adapter 层完成（front_isp/raw_adapter.py：
-# Bayer 重建 → 0.5*Malvar + 0.5*Bilinear），这里不做 mosaic 处理。
 front_isp:
   enabled: true
   type: learnable
   learnable:
-    camera_specific: true      # FiveK 24 台相机 → 24 套 {WB, CCM, Bias, Gamma}
-    n_cameras: 24              # 训练侧会按数据自动覆盖
+    camera_specific: true      # FiveK 35 台相机 → 逐相机 {WB, CCM, Bias, Gamma}
+    n_cameras: 24              # 训练侧会按数据实际相机数覆盖
     white_balance: {learnable: true}
     ccm:          {learnable: true}
     bias:         {learnable: true}
@@ -36,13 +34,12 @@ front_isp:
       type: identity           # identity | fittedisp | camera_specific
       # params: params.json    # fittedisp 初始化时的参数文件
 
-# ---------- Stage 1 损失权重 ----------
+# Stage 1 损失权重
 training:
   lambda_l1:    1.0
   lambda_ssim:  1.0
   lambda_lpips: 1.0
 
-# ---------- Human Quality task（数据与 LPIPS 网络）----------
 human_quality:
   fivek_root:  /home/jing/datasets/fivek
   cache_dir:   /home/jing/datasets/fivek/cache_expert_c
@@ -52,8 +49,6 @@ human_quality:
   lambda_lpips: 1.0
   lpips_net:    alex
 
-# ---------- Logging / checkpointing ----------
-val_freq: 1000
 save_model_freq: 2500       # 与 epochs×iters 对齐；Stage 2 从这里取 ckpt
 print_freq: 50
 summary_freq: 100

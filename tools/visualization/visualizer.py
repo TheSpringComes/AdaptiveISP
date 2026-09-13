@@ -317,6 +317,7 @@ def run_detection(
         feature_dim=cfg.feature_extractor_dims,
         dropout_keep_prob=cfg.dropout_keep_prob,
         exploration=cfg.exploration, max_steps=cfg.test_steps,
+        min_rollout_length=int(cfg.get('min_rollout_length', 1)),
     ).to(device)
     controller.load_state_dict(ckpt['controller_model'])
     controller.eval()
@@ -397,6 +398,7 @@ def run_human(
         feature_dim=cfg.feature_extractor_dims,
         dropout_keep_prob=cfg.dropout_keep_prob,
         exploration=cfg.exploration, max_steps=cfg.test_steps,
+        min_rollout_length=int(cfg.get('min_rollout_length', 1)),
     ).to(device)
     controller.load_state_dict(ckpt['controller_model'])
     controller.eval()

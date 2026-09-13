@@ -13,9 +13,9 @@ Structural differences from `engine.trainer.Trainer`:
     `Q(I_T) - Q(I_0)` fires only on the terminal step. Auxiliary penalties
     (entropy / usage / early-stop / runtime) fire every step, same as
     Detection.
-  - Print block matches the Detection trainer's format-A: one header line
-    with progress / it/s / ETA, then loss / example (with the full op
-    sequence for sample 0) / ops (window + cum share).
+  - Print block matches the Detection trainer's format: one header line
+    with progress / it/s / ETA, then loss / example (three eval-argmax
+    shadow rollouts: canary / batch / fresh) / ops (window top-6).
 """
 from __future__ import annotations
 
@@ -43,8 +43,7 @@ if not logger.hasHandlers():
 class HumanTrainer(BaseTrainer):
     """Assembles Controller + Executor + HumanReward + FiveK loader."""
 
-    banner = ("HumanTrainer begin....\n"
-              "------- V2-AI: FiveK + Expert C  →  SSIM/LPIPS terminal reward ---------")
+    banner = ("HumanTrainer begin....\n")
     ckpt_prefix = "HumanISP"
 
     def __init__(self, args, task: str = "train") -> None:
@@ -135,7 +134,31 @@ class HumanTrainer(BaseTrainer):
 
         self.cfg = cfg
 
+        # Fixed canary sample for the print block's `example / canary` rollout.
+        # Same rationale as Detection: keeping the input constant across iters
+        # shows how the Controller's policy evolves on the SAME image.
+        self._canary_img = self._grab_dataset_image()
+
     # ----------------------- helpers -----------------------
+
+    def _grab_dataset_image(self) -> Optional[torch.Tensor]:
+        """Pull one FiveK sample, apply the (frozen) Front ISP, return `(1,3,H,W)`.
+
+        Front ISP needs the sample's camera id (learnable camera-specific
+        params), so the grab goes through the dataset rather than the loader.
+        Returns None on failure — callers treat that as "skip this example".
+        """
+        try:
+            idx = int(torch.randint(0, len(self.train_dataset), (1,)).item())
+            img, _tgt, cam = self.train_dataset[idx]
+        except Exception as exc:
+            print(f"dataset image capture failed: {exc!r}")
+            return None
+        im = img.unsqueeze(0).to(self.device).float()
+        cam_ids = torch.as_tensor([int(cam)]).to(self.device)
+        with torch.no_grad():
+            im = self.front_isp(im, {'camera_id': cam_ids}).clamp(0.0, 1.0)
+        return im
 
     def _next_batch(self):
         try:
@@ -175,24 +198,21 @@ class HumanTrainer(BaseTrainer):
         n_ops = len(self.cfg.operators)
         T = int(self.cfg.test_steps)
         mloss_agent, mloss_value = 0.0, 0.0
-        mloss_quality_delta = 0.0
 
         # per-op selection tracking (window + cumulative)
         op_pick_cum = np.zeros(n_ops, dtype=np.int64)
         op_pick_window = np.zeros(n_ops, dtype=np.int64)
-        neural_mask = np.array([n.startswith("n_") for n in self.cfg.operators], dtype=bool)
 
-        # V2-AI (A+C): windowed accumulators for reward-breakdown + policy
-        # diagnostics. For Human, reward components are per-step (aggregated
-        # across the T-step rollout inside each iter), then summed across
-        # iters in the window. `n_steps` is total per-step samples in-window.
-        win = self._make_window()
+        # Windowed accumulators for reward-breakdown + policy diagnostics
+        # (per-step accumulation; reward components are divided by n_iters
+        # at print time to give per-rollout totals — see docs/TRAINING_LOG.md).
+        # n_ops>0 also enables the pdf accumulator for `top_prob`.
+        win = self._make_window(n_ops=n_ops)
         log_n_ops_plus1 = float(np.log(n_ops + 1))
 
         t_start = time.perf_counter()
         t_prev_print = t_start
         iter_prev_print = 0
-        max_steps_display = int(self.cfg.test_steps)
 
         for it in range(max_iter_step + 1):
             self.controller.train()
@@ -223,7 +243,6 @@ class HumanTrainer(BaseTrainer):
             state = self.runtime.initial_state(imgs)
             value_losses: list[torch.Tensor] = []
             agent_losses: list[torch.Tensor] = []
-            traj_step_info: list[tuple[str, np.ndarray]] = []   # sample 0's per-step (op_name, phys)
             reward_totals: list[torch.Tensor] = []
             q_final_parts: dict[str, torch.Tensor] = {}
             # V3-E3 PPO branch state
@@ -236,16 +255,11 @@ class HumanTrainer(BaseTrainer):
                 ctrl_out = self.controller.act(state, constraint)
                 new_state = self.runtime.step(state, ctrl_out.action)
 
-                # per-op window/cum + sample-0 op + physical param
+                # per-op window/cum
                 op_idx_np = ctrl_out.action.op_indices.detach().cpu().numpy()
                 counts = np.bincount(op_idx_np, minlength=n_ops)
                 op_pick_cum += counts
                 op_pick_window += counts
-                op_idx_0 = int(op_idx_np[0])
-                op_name_0 = self.cfg.operators[op_idx_0]
-                spec_dim = self.runtime.operators[op_name_0].spec.dim
-                phys_0 = ctrl_out.action.params[0, :spec_dim].detach().cpu().numpy()
-                traj_step_info.append((op_name_0, phys_0))
 
                 r, breakdown, q_parts = self.reward_fn.compute(
                     image_initial=imgs, target=targets,
@@ -350,13 +364,19 @@ class HumanTrainer(BaseTrainer):
                 q_final = m_T['quality']
                 q_final_parts = {'ssim': m_T['ssim'], 'lpips': m_T['lpips'], 'quality': m_T['quality']}
             q_delta = (q_final - q_initial).mean().item()
+            win['n_iters'] += 1
+            # avg_len accumulation: `op_usage` only counts ops actually
+            # executed (executor guards on ~is_stop), so its row-sum is
+            # each sample's rollout length — same convention as the
+            # evaluator's val mean_length.
+            win['len_sum'] += int(state.op_usage.sum(dim=1).sum().item())
+            win['n_samples'] += int(state.batch_size)
 
             # loss stats (moving averages). `agent_val` / `value_val` are set
             # above in each branch — PPO uses ppo_stats, Actor-Critic uses the
             # per-step losses.
             mloss_agent = (mloss_agent * it + agent_val) / (it + 1)
             mloss_value = (mloss_value * it + value_val) / (it + 1)
-            mloss_quality_delta = (mloss_quality_delta * it + q_delta) / (it + 1)
 
             # summary logs
             if it % self.cfg.summary_freq == 0:
@@ -372,8 +392,6 @@ class HumanTrainer(BaseTrainer):
                     for i, name in enumerate(self.cfg.operators):
                         self.writer.add_scalar(f'op_pick_share/{name}',
                                                op_pick_cum[i] / total_picks, global_step=it)
-                    self.writer.add_scalar('op_pick_share/_neural_total',
-                                           op_pick_cum[neural_mask].sum() / total_picks, global_step=it)
                     self.writer.add_images('input',
                         torch.clip(imgs[:self.cfg.show_img_num], 0.0, 1.0),
                         global_step=it, dataformats="NCHW")
@@ -386,7 +404,8 @@ class HumanTrainer(BaseTrainer):
                 except Exception:
                     print("write log error!")
 
-            # print block
+            # print block — five sections: reward / policy / quality /
+            # rollout. Semantics documented in docs/TRAINING_LOG.md.
             if it % self.cfg.print_freq == 0:
                 t_now = time.perf_counter()
                 elapsed = t_now - t_start
@@ -395,72 +414,99 @@ class HumanTrainer(BaseTrainer):
                 it_per_s = di_win / dt_win if it > 0 else 0.0
                 remaining = max_iter_step - it
                 eta = remaining / it_per_s if it_per_s > 0 else 0.0
-                header_time = datetime.datetime.now().strftime("%H:%M:%S")
+                debug_log = bool(os.environ.get('ADAPTIVEISP_LOG_DEBUG'))
                 print(
-                    f"----- iter {it}/{max_iter_step} [{header_time}] "
+                    f"----- iter {it}/{max_iter_step} | "
                     f"elapsed {self._fmt_elapsed(elapsed)} | {it_per_s:.2f} it/s | "
                     f"ETA {self._fmt_elapsed(eta)} -----"
                 )
-                print(
-                    f"  loss     agent={mloss_agent:.4f} val={mloss_value:.4f} "
-                    f"Q_0={q_initial.mean().item():+.4f} Q_T={q_final.mean().item():+.4f} "
-                    f"ΔQ={q_delta:+.4f} SSIM={q_final_parts['ssim'].mean().item():.4f} "
-                    f"LPIPS={q_final_parts['lpips'].mean().item():.4f}"
-                )
 
-                # V2-AI (A): windowed reward-breakdown means (per rollout step).
-                wn = max(1, win['n_steps'])
-                stop_bonus_on = float(self.cfg.get('stop_bonus_scale', 0.0)) != 0.0
-                bits_A = [
-                    f"task={win['task'] / wn:+.3f}",
-                    f"ent=-{abs(win['ent_pen'] / wn):.3f}",
-                    f"use=-{abs(win['use'] / wn):.3f}",
-                    f"estop=-{abs(win['estop'] / wn):.3f}",
-                    f"ovfl=-{abs(win['ovfl'] / wn):.3f}",
+                # reward — per-rollout totals (batch mean, averaged over the
+                # window's iters): total = task − use − estop − ent − ovfl
+                # (+ activated stop+ / runt). Per-rollout so `task` maps
+                # directly onto the quality block's ΔQ (task ≈ ΔQ × m).
+                wi = max(1, win['n_iters'])
+                bits_r = [
+                    f"task={win['task'] / wi:+.3f}",
+                    f"use=-{win['use'] / wi:.3f}",
+                    f"estop=-{win['estop'] / wi:.3f}",
+                    f"ent=-{win['ent_pen'] / wi:.3f}",
+                    f"ovfl=-{win['ovfl'] / wi:.3f}",
                 ]
-                if stop_bonus_on:
-                    bits_A.append(f"stop+={win['stop_b'] / wn:+.3f}")
+                if float(self.cfg.get('stop_bonus_scale', 0.0)) != 0.0:
+                    bits_r.append(f"stop+={win['stop_b'] / wi:+.3f}")
                 if self.cfg.filter_runtime_penalty:
-                    bits_A.append(f"runt=-{abs(win['runt'] / wn):.3f}")
-                print(f"  reward   {' '.join(bits_A)}")
+                    bits_r.append(f"runt=-{win['runt'] / wi:.3f}")
+                print(f"reward   total={win['total'] / wi:+.3f}     {' | '.join(bits_r)}")
 
-                # V2-AI (C): policy/exploration diagnostics.
+                # policy — loss / value are cumulative means over iters;
+                # entropy / stop / avg_len / top_prob are per-decision or
+                # per-rollout statistics over the window. avg_len 的分母是
+                # 可达上限 T-1：rollout 最后一步恒为强制 STOP（不执行算子）。
+                wn = max(1, win['n_steps'])
                 pol_ent = win['pol_ent'] / wn
-                argmax_pct = (100.0 * win['argmax_hits'] / max(1, win['argmax_seen']))
                 stop_pct = (100.0 * win['n_stop'] / max(1, win['argmax_seen']))
-                learned_pct = (100.0 * win['n_stop_learned'] / max(1, win['n_stop'])
-                               if win['n_stop'] else 0.0)
-                timelimit_pct = 100.0 - learned_pct if win['n_stop'] else 0.0
-                print(
-                    f"  policy   entropy={pol_ent:.3f}/{log_n_ops_plus1:.3f}  "
-                    f"argmax={argmax_pct:.0f}%  "
-                    f"stop={stop_pct:.0f}% (learned={learned_pct:.0f}%, "
-                    f"timelimit={timelimit_pct:.0f}%)"
+                avg_len = win['len_sum'] / max(1, win['n_samples'])
+                len_cap = max(T - 1, 1)
+                print(f"policy   loss={mloss_agent:.4f}  value={mloss_value:.4f}    "
+                    f"entropy={pol_ent:.3f}/{log_n_ops_plus1:.3f}  "
+                    f"stop={stop_pct:.0f}%  avg_len={avg_len:.1f}/{len_cap}"
                 )
+                if win['pdf_n'] > 0:
+                    mean_pdf = win['pdf_sum'] / win['pdf_n']
+                    top_idx = np.argsort(-mean_pdf)[:4]
+                    names = list(self.cfg.operators) + ["STOP"]
+                    probs = "  ".join(
+                        f"{names[i]}={100 * mean_pdf[i]:.1f}%" for i in top_idx
+                    )
+                    print(f"         top_prob: {probs}")
+                if debug_log and use_ppo:
+                    print(f"         [ppo] kl={ppo_stats['approx_kl']:.4f}  "
+                          f"clipfrac={ppo_stats['clip_frac']:.2f}  "
+                          f"n_mb={ppo_stats['n_mbs']}")
 
-                # example — sample 0's full op sequence with per-step α / first param
-                seq_pretty = [self._fmt_step(name, phys) for (name, phys) in traj_step_info]
-                q0_s0 = q_initial[0, 0].item()
-                qT_s0 = q_final[0, 0].item()
-                print(
-                    f"  example  sample 0  Q_0={q0_s0:+.4f} → Q_T={qT_s0:+.4f} "
-                    f"(ΔQ={qT_s0 - q0_s0:+.4f})"
-                )
-                print(f"           picks: {' → '.join(seq_pretty)}")
+                # quality — instantaneous batch means of the CURRENT iter:
+                # Front ISP output (I_0) → AdaptiveISP final (I_T). Δ shows
+                # whether the Controller improved or damaged its input.
+                q0 = q_initial.mean().item()
+                qT = q_final.mean().item()
+                s0 = m0['ssim'].mean().item()
+                sT = q_final_parts['ssim'].mean().item()
+                l0 = m0['lpips'].mean().item()
+                lT = q_final_parts['lpips'].mean().item()
+                print(f"quality  Q       {q0:.4f} → {qT:.4f}   Δ={qT - q0:+.4f}")
+                print(f"         SSIM    {s0:.4f} → {sT:.4f}   Δ={sT - s0:+.4f}")
+                print(f"         LPIPS   {l0:.4f} → {lT:.4f}   Δ={lT - l0:+.4f}")
 
-                # ops window/cum
+                # rollout — three eval-argmax shadow rollouts: canary (fixed
+                # image drawn at init) shows policy evolution on the same
+                # input; batch / fresh separate "the policy changed" from
+                # "the image was different". Bare names with repeats
+                # collapsed; ADAPTIVEISP_LOG_DEBUG=1 expands params.
+                b_idx = int(torch.randint(0, imgs.shape[0], (1,)).item())
+                batch_img = imgs[b_idx:b_idx + 1]
+                fresh_img = self._grab_dataset_image()
+
+                rollouts: list[tuple[str, list]] = []
+                if self._canary_img is not None:
+                    rollouts.append(("canary", self._shadow_rollout(self._canary_img)))
+                rollouts.append(("batch", self._shadow_rollout(batch_img)))
+                if fresh_img is not None:
+                    rollouts.append(("fresh", self._shadow_rollout(fresh_img)))
+                for j, (name, steps) in enumerate(rollouts):
+                    tag = "rollout  " if j == 0 else "         "
+                    print(f"{tag}{name:7s}: "
+                          f"{self._fmt_rollout(steps, with_params=debug_log)}")
+
+                # ops — windowed pick counts (top-6)
                 w_total = int(op_pick_window.sum())
                 if w_total:
                     top_idx = np.argsort(-op_pick_window)[:6]
-                    top_str = " ".join(
-                        f"{self.cfg.operators[i]}:{op_pick_window[i]}"
+                    top_str = "  ".join(
+                        f"{self.cfg.operators[i]}={op_pick_window[i]}"
                         for i in top_idx if op_pick_window[i] > 0
                     )
-                    c_total = int(op_pick_cum.sum())
-                    c_neural = int(op_pick_cum[neural_mask].sum())
-                    print(f"  ops      window({w_total}) top: {top_str}")
-                    print(f"           cum neural {c_neural}/{c_total} = "
-                          f"{100 * c_neural / max(c_total, 1):.1f}%")
+                    print(f"         ops({w_total}): {top_str}")
                 op_pick_window[:] = 0
                 self._reset_window(win)
                 t_prev_print = t_now
@@ -562,7 +608,7 @@ class HumanTrainer(BaseTrainer):
         print(f"  LPIPS: {metrics['val/lpips']:.4f}")
         print(f"  PSNR:  {metrics['val/psnr']:.2f} dB   ΔE76: {metrics['val/delta_e']:.2f}")
         print(f"  Q:     {metrics['val/quality']:+.4f}")
-        print(f"  mean rollout length: {metrics['val/mean_length']:.2f}/{T}")
+        print(f"  mean rollout length: {metrics['val/mean_length']:.2f}/{max(T - 1, 1)}")
         print(f"  pct learned-STOP (before time-limit): {100 * metrics['val/pct_learned_stop']:.1f}%")
         print("=================================\n")
         return metrics

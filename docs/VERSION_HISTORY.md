@@ -84,18 +84,29 @@ early_stop_penalty=2.0），Q 比 H3 高 4.5pt 且省 37.5% 计算。
 E3=0.597 mAP@0.5。Backbone 限制了 Controller 为 YOLOv3 特征做定向优化的
 空间；800 epochs 长训可能追回。
 
-V3 的配置与脚本仍随库发行，可复跑：
-`configs/adaptiveisp_v3_e{1,2,3}.yaml`、
-`configs/adaptiveisp_human_v3_e{1,2,3}*.yaml`、
-`scripts/run_v3_ablation.sh`、`scripts/run_v3_human_ablation.sh`、
-`scripts/run_v3_human_s5_variants.sh`、`scripts/val_v3_ablation.sh`。
+V3 的配置与驱动脚本已随 2026-09-13 的整理移除（结论存档于本节，
+配置可从 git 历史找回：`adaptiveisp_v3_e{1,2,3}.yaml`、
+`adaptiveisp_human_v3_e{1,2,3}*.yaml` 及对应 `run_v3_*.sh`）。
 
 ## 4. V3.1 — Front ISP 四模式（当前版本）
 
-V3.1 的设计与当前用法见 [README.md](../README.md)。此处存档
-**2026-09-13 五组消融（A–E，新 cache）**的完整结果——这是当前 cache 上
-唯一一套可比较基准。汇总由 `scripts/summarize_ablation_v31.py` 生成，
-本机同步存于 `experiments/ablation_summary.md`（`experiments/` 不入库）。
+V3.1 的设计与当前用法见 [README.md](../README.md)。
+
+**两次影响可比性的变更（2026-09-13）**：
+
+1. **RL 算法切换**：human 系列 `rl_algo.name` 从 `actor_critic` 改为
+   `ppo`（含 `min_rollout_length: 3`），依据是旧 cache H 系列 H3 > H0
+   的证据；新 cache 上尚无 PPO 对照。下文 A–E 全部跑于 actor_critic，
+   切换后复跑的数字与 A–E 不可直接比较。
+2. **配置整理**：human 系列改为 `configs/base/human.yaml` 继承制，
+   同时移除死键（`stop_bonus_scale` 在 HumanReward 中从未实现、
+   `z_type`/`use_TD` 等 detection-only 键）；V3 与 v2 残留消融配置
+   （`*_v3_e*`、`steps5`）及驱动脚本删除。
+
+此处存档**2026-09-13 五组消融（A–E，新 cache，actor_critic）**的完整
+结果——这是当前 cache 上唯一一套可比较基准。汇总由
+`scripts/summarize_ablation_v31.py` 生成，本机同步存于
+`experiments/ablation_summary.md`（`experiments/` 不入库）。
 
 统一预算：C 组 Stage 1 预训练 1500 iters（batch 8），五组 Stage 2 各
 1000 iters（batch 4, imgsz 512, T=8），val = 97 张 Expert-C。

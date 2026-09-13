@@ -177,41 +177,9 @@ class Trainer(BaseTrainer):
         return im
 
     # ------------------------- shadow rollout helper -------------------------
-
-    def _shadow_rollout(self, single_img: torch.Tensor) -> tuple[list[str], int]:
-        """Run one T-step eval-argmax rollout on a `(1,3,H,W)` image.
-        Returns (pretty seq incl. optional final "STOP", op count excluding STOP).
-        """
-        def _fmt_step(op_name: str, phys: np.ndarray) -> str:
-            first = float(phys[0]) if phys.size else 0.0
-            if op_name.startswith("n_"):
-                return f"{op_name}(α={first:.2f})"
-            if phys.size > 1:
-                return f"{op_name}({first:.2f},+{phys.size - 1})"
-            return f"{op_name}({first:.2f})"
-
-        T_max = int(self.cfg.test_steps)
-        self.controller.eval()
-        with torch.no_grad():
-            state = self.runtime.initial_state(single_img.clone())
-            seq: list[str] = []
-            for _t in range(T_max):
-                c = self.search_space.valid_actions(state)
-                o = self.controller.act(state, c)
-                if o.action.is_stop[0].item() and not state.stopped[0].item():
-                    seq.append("STOP")
-                    break
-                idx = int(o.action.op_indices[0].item())
-                name = self.cfg.operators[idx]
-                dim = self.runtime.operators[name].spec.dim
-                phys = o.action.params[0, :dim].detach().cpu().numpy()
-                seq.append(_fmt_step(name, phys))
-                state = self.runtime.step(state, o.action)
-                if state.stopped[0].item():
-                    break
-        self.controller.train()
-        path_len = sum(1 for s in seq if s != "STOP")
-        return seq, path_len
+    # `_shadow_rollout` lives on BaseTrainer (shared with HumanTrainer's
+    # print block); `_grab_dataset_image` above is the Detection-specific
+    # sample source for the canary / fresh example rollouts.
 
     def train(self) -> None:
         self._maybe_resume(self.args.resume)
@@ -250,13 +218,10 @@ class Trainer(BaseTrainer):
         win = self._make_window()
         log_n_ops_plus1 = float(np.log(n_ops + 1))   # entropy max for select_head
 
-        # V2-AI: per-op cumulative selection counts, plus a windowed counter
-        # reset each `print_freq` block. Prints show classical vs neural share
-        # so we can watch whether the Controller actually learns to pick the
-        # n_* ops.
+        # Per-op cumulative selection counts, plus a windowed counter reset
+        # each `print_freq` block (print block shows the window top-6).
         op_pick_cum = np.zeros(n_ops, dtype=np.int64)
         op_pick_window = np.zeros(n_ops, dtype=np.int64)
-        neural_mask = np.array([n.startswith("n_") for n in self.cfg.operators], dtype=bool)
 
         # V2-AI: elapsed + ETA tracking. `t_start` covers the whole run;
         # `t_prev_print` gives the rolling iter/s for the last print window,
@@ -494,15 +459,11 @@ class Trainer(BaseTrainer):
                             torch.clip(state_before.image[:self.cfg.show_img_num], 0.0, 1.0),
                             global_step=iter, dataformats="NCHW")
 
-                        # V2-AI: per-op cumulative pick shares + neural/classical split.
+                        # V2-AI: per-op cumulative pick shares.
                         total_picks = float(op_pick_cum.sum()) or 1.0
                         for i, name in enumerate(self.cfg.operators):
                             self.writer.add_scalar(f'op_pick_share/{name}',
                                                    op_pick_cum[i] / total_picks, global_step=iter)
-                        self.writer.add_scalar('op_pick_share/_neural_total',
-                                               op_pick_cum[neural_mask].sum() / total_picks, global_step=iter)
-                        self.writer.add_scalar('op_pick_share/_classical_total',
-                                               op_pick_cum[~neural_mask].sum() / total_picks, global_step=iter)
                     except Exception:
                         print("write log error!")
                     op_idx_cpu = ctrl_out.action.op_indices.detach().cpu().tolist()
@@ -540,9 +501,8 @@ class Trainer(BaseTrainer):
                 it_per_s = di_win / dt_win if iter > 0 else 0.0
                 remaining = self.cfg.max_iter_step - iter
                 eta = remaining / it_per_s if it_per_s > 0 else 0.0
-                header_time = datetime.datetime.now().strftime("%H:%M:%S")
                 header = (
-                    f"----- iter {iter}/{self.cfg.max_iter_step} [{header_time}] "
+                    f"----- iter {iter}/{self.cfg.max_iter_step} | "
                     f"elapsed {self._fmt_elapsed(elapsed)} | "
                     f"{it_per_s:.2f} it/s | ETA {self._fmt_elapsed(eta)} -----"
                 )
@@ -553,41 +513,6 @@ class Trainer(BaseTrainer):
                     f"reward={r.mean().item():+.4f}"
                 )
 
-                # # V2-AI (A): windowed reward-breakdown means.
-                # wn = max(1, win['n'])
-                # stop_bonus_on = float(self.cfg.get('stop_bonus_scale', 0.0)) != 0.0
-                # bits_A = [
-                #     f"task={win['task'] / wn:+.3f}",
-                #     f"ent=-{abs(win['ent_pen'] / wn):.3f}",
-                #     f"use=-{abs(win['use'] / wn):.3f}",
-                #     f"estop=-{abs(win['estop'] / wn):.3f}",
-                #     f"ovfl=-{abs(win['ovfl'] / wn):.3f}",
-                # ]
-                # if stop_bonus_on:
-                #     bits_A.append(f"stop+={win['stop_b'] / wn:+.3f}")
-                # if self.cfg.filter_runtime_penalty:
-                #     bits_A.append(f"runt=-{abs(win['runt'] / wn):.3f}")
-                # print(f"  reward   {' '.join(bits_A)}")
-
-                # # V2-AI (C): policy/exploration diagnostics.
-                # pol_ent = win['pol_ent'] / wn
-                # argmax_pct = (100.0 * win['argmax_hits'] / max(1, win['argmax_seen']))
-                # stop_pct = (100.0 * win['n_stop'] / max(1, win['argmax_seen']))
-                # learned_pct = (100.0 * win['n_stop_learned'] / max(1, win['n_stop'])
-                #                if win['n_stop'] else 0.0)
-                # timelimit_pct = 100.0 - learned_pct if win['n_stop'] else 0.0
-                # print(
-                #     f"  policy   entropy={pol_ent:.3f}/{log_n_ops_plus1:.3f}  "
-                #     f"argmax={argmax_pct:.0f}%  "
-                #     f"stop={stop_pct:.0f}% (learned={learned_pct:.0f}%, "
-                #     f"timelimit={timelimit_pct:.0f}%)"
-                # )
-
-                # traj — batch and replay-pool trajectory-length statistics.
-                # ReplayMemory stores state as a flat [has_reward, stopped, step, op_usage...]
-                # np array; step is at index 2.
-                T_max = int(self.cfg.test_steps)
-
                 # example — three eval-argmax shadow rollouts to reveal what
                 # the current Controller would do end-to-end on:
                 #   canary : a fixed image drawn once at init  → shows policy
@@ -596,28 +521,28 @@ class Trainer(BaseTrainer):
                 #   fresh  : a newly-drawn sample from the dataset each print
                 # Together these separate "the policy changed" from "the image
                 # was different" when a single rollout looks unfamiliar.
+                # Bare names with repeats collapsed; ADAPTIVEISP_LOG_DEBUG=1
+                # expands per-op params (HumanTrainer prints the same
+                # section — see docs/TRAINING_LOG.md).
+                debug_log = bool(os.environ.get('ADAPTIVEISP_LOG_DEBUG'))
                 b_idx = int(torch.randint(0, imgs.shape[0], (1,)).item())
                 batch_img = imgs[b_idx:b_idx + 1]
                 fresh_img = self._grab_dataset_image()
 
-                rollouts: list[tuple[str, list[str], int]] = []
+                rollouts: list[tuple[str, list]] = []
                 if self._canary_img is not None:
-                    seq, ln = self._shadow_rollout(self._canary_img)
-                    rollouts.append(("canary", seq, ln))
-                seq, ln = self._shadow_rollout(batch_img)
-                rollouts.append((f"batch", seq, ln))
+                    rollouts.append(("canary", self._shadow_rollout(self._canary_img)))
+                rollouts.append(("batch", self._shadow_rollout(batch_img)))
                 if fresh_img is not None:
-                    seq, ln = self._shadow_rollout(fresh_img)
-                    rollouts.append(("fresh", seq, ln))
+                    rollouts.append(("fresh", self._shadow_rollout(fresh_img)))
 
-                print("  example  eval-argmax rollouts on {}:".format(
-                    " / ".join(name for name, _, _ in rollouts)
-                ))
-                for name, seq, ln in rollouts:
-                    print(f"           {name:9s} (len={ln}/{T_max}): "
-                          f"{' → '.join(seq) if seq else '(none)'}")
+                for j, (name, steps) in enumerate(rollouts):
+                    tag = "  rollout  " if j == 0 else "           "
+                    n_ops_done = sum(1 for s, _p in steps if s != "STOP")
+                    print(f"{tag}{name:7s} (len={n_ops_done}/{T_max}): "
+                          f"{self._fmt_rollout(steps, with_params=debug_log)}")
 
-                # ops window/cum
+                # ops window top-6
                 w_total = int(op_pick_window.sum())
                 if w_total:
                     top_idx = np.argsort(-op_pick_window)[:6]
@@ -625,13 +550,7 @@ class Trainer(BaseTrainer):
                         f"{self.cfg.operators[i]}:{op_pick_window[i]}"
                         for i in top_idx if op_pick_window[i] > 0
                     )
-                    c_total = int(op_pick_cum.sum())
-                    c_neural = int(op_pick_cum[neural_mask].sum())
                     print(f"  ops      window({w_total}) top: {top_str}")
-                    print(
-                        f"           cum neural {c_neural}/{c_total} = "
-                        f"{100 * c_neural / max(c_total, 1):.1f}%"
-                    )
                 op_pick_window[:] = 0
                 self._reset_window(win)
                 t_prev_print = t_now

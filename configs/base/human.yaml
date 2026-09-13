@@ -1,0 +1,111 @@
+# Human Quality 任务共享基座（configs/base/human.yaml）。
+#
+# 变体配置通过 `base:` 键继承本文件，只写差异：
+#
+#     base: configs/base/human.yaml
+#     front_isp:
+#       enabled: true
+#       type: fixed
+#
+# 合并语义（engine/util._deep_merge）：dict 深合并、list 与标量整体替换。
+# 修改本文件会影响所有继承它的变体——改共享参数前先 `grep -l base: configs/`。
+
+# ---------- Operators（Human 任务 15 算子；重定义时需整表替换） ----------
+operators:
+  - exposure
+  - gamma
+  - ccm
+  - sharpen
+  - denoise
+  - tone
+  - contrast
+  - saturation
+  - wnb
+  - whitebalance
+  - n_awb
+  - n_gain
+  - n_gtm
+  - n_chroma
+  - n_gamma
+
+# Runtime cost per op（与 operators 对齐；仅 filter_runtime_penalty 开启时消费）
+filters_runtime: [1.7, 2.0, 1.9, 6.3, 10.0, 2.7, 2.1, 2.0, 1.9, 1.7,
+                  8.0, 3.0, 4.0, 0.4, 0.3]
+filter_runtime_penalty: false
+filter_runtime_penalty_lambda: 0.01
+
+# ---------- Front ISP（V3.1 四种统一模式；默认 identity = 无前置） ----------
+# 变体在此块覆盖：type: fixed | learnable | external（详见各变体注释）
+front_isp:
+  enabled: false
+  type: identity
+
+# ---------- Action Mask（V3-A2 硬先验；默认全关） ----------
+action_mask:
+  no_repeat:    {enabled: false, exempt: []}
+  order:        {enabled: false, rules: []}
+  group_budget: {enabled: false, groups: []}
+
+# ---------- RL 算法：PPO（human 任务默认） ----------
+# 切回 1-step TD Actor-Critic：name: actor_critic（PPO 分支代码保留可对照）。
+rl_algo:
+  name: ppo
+  ppo:
+    epochs: 4              # K，PPO 轮数
+    clip_range: 0.2        # clipped surrogate 的 ε
+    value_coef: 0.5        # value MSE 权重
+    entropy_coef: 0.01     # 熵奖励权重
+    advantage_norm: true   # 每 minibatch 归一化 advantage
+    minibatch_size: 64
+    grad_clip_norm: 0.5    # 策略优化器的梯度裁剪
+    gae_lambda: 0.95
+    # gamma: 继承 discount_factor
+
+# ---------- Human Quality 任务（数据路径 + 质量度量） ----------
+human_quality:
+  fivek_root:  /home/jing/datasets/fivek
+  cache_dir:   /home/jing/datasets/fivek/cache_expert_c
+  train_list:  /home/jing/datasets/fivek/train_expert_c.txt
+  val_list:    /home/jing/datasets/fivek/val_expert_c.txt
+  lambda_ssim:  1.0
+  lambda_lpips: 0.5
+  # lpips_net:    alex
+  lpips_net:    vgg
+
+# ---------- Logging / checkpointing ----------
+save_model_freq: 1000
+print_freq: 100
+summary_freq: 100
+show_img_num: 5
+
+# ---------- Reward / rollout ----------
+critic_logit_multiplier: 10      # 终端奖励 = ΔQ × 此值
+discount_factor: 1.0
+filter_usage_penalty: 5.0        # 重复惩罚 2^k × 5（第 2 次 10、第 3 次 20）
+all_reward: 1.0
+exploration: 0.2                 # ε-mix（为算子覆盖面从 V1 的 0.05 调高）
+exploration_penalty: 0.05
+early_stop_penalty: 1.0
+use_penalty: true
+test_steps: 8                    # rollout 长度 T
+grad_clip_norm: 1.0e-05          # op-param 路径的梯度裁剪
+min_rollout_length: 3            # PPO 必需：禁此值时 PPO 塌缩到"第一步即 STOP"
+
+# ---------- Controller 网络 ----------
+base_channels: 32
+dropout_keep_prob: 0.5
+fc1_size: 128
+feature_extractor_dims: 4096
+obs_hw: 128
+
+# ---------- Epoch 定义（max_iter_step = epochs × images_per_epoch / batch） ----------
+images_per_epoch: 500
+
+# ---------- Trainer 默认（tools/train.py --* 可覆盖） ----------
+train:
+  batch_size: 4
+  epochs: 25
+  lr: 3.0e-05
+  imgsz: 512
+  lr_decay: 0.1
+  lr_segments: 3

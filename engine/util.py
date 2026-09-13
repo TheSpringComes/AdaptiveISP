@@ -9,8 +9,60 @@ import threading
 import yaml
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    """递归合并 override 到 base（override 优先，dict 深合并，其余整体替换）。
+
+    list（operators / rules / groups 等）一律整体替换——消融变体重新
+    列出完整列表比"按索引合并"更可读也更安全。
+    """
+    out = dict(base)
+    for k, v in override.items():
+        if k in out and isinstance(out[k], dict) and isinstance(v, dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+def _load_yaml_with_base(path: str, _seen: tuple = ()) -> dict:
+    """读一个 yaml；若声明 `base:` 键则先递归加载 base 再做 override 合并。
+
+    `base: configs/base/human.yaml`（相对仓库根或相对本文件所在目录均可）。
+    禁止继承环；`base` 键本身在合并完成后从结果中移除。
+    """
+    with open(path, "r") as f:
+        data = yaml.safe_load(f) or {}
+
+    base_ref = data.pop('base', None)
+    if base_ref is None:
+        return data
+    if not isinstance(base_ref, str):
+        raise ValueError(f"{path}: 'base' 必须是一个 yaml 路径字符串")
+
+    # 相对路径：先按相对仓库根解析（与 --cfg 的用法一致），再按相对
+    # 本文件所在目录解析（允许 base/ 目录内部互相引用）。
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cand = [base_ref,
+            os.path.join(repo_root, base_ref),
+            os.path.join(os.path.dirname(os.path.abspath(path)), base_ref)]
+    base_path = next((c for c in cand if os.path.isfile(c)), None)
+    if base_path is None:
+        raise FileNotFoundError(f"{path}: base 配置不存在: {base_ref}")
+    base_path = os.path.abspath(base_path)
+    if base_path in _seen:
+        raise ValueError(f"config 继承环: {' -> '.join(_seen + (base_path,))}")
+
+    base_data = _load_yaml_with_base(base_path, _seen + (os.path.abspath(path),))
+    if not isinstance(base_data, dict):
+        raise ValueError(f"{base_path}: base 配置顶层必须是映射")
+    return _deep_merge(base_data, data)
+
+
 def load_config(path: str):
     """Load a config yaml (or fall back to a python module for legacy .py paths).
+
+    yaml 支持 `base:` 继承：变体配置只写与 base 的差异，加载时递归合并
+    （见 `_load_yaml_with_base`）。
 
     Returns a `Dict` for dot-attribute access, with derived fields populated:
       - `num_state_dim`  (defaults to 3 + len(operators))
@@ -20,8 +72,7 @@ def load_config(path: str):
     `engine.evaluator` so all three paths see identical derived fields.
     """
     if path.endswith(".yaml") or path.endswith(".yml"):
-        with open(path, "r") as f:
-            data = yaml.safe_load(f)
+        data = _load_yaml_with_base(path)
         cfg = Dict(data)
     else:
         # Legacy: python module import (e.g., --cfg config)

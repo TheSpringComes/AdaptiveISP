@@ -46,7 +46,6 @@ class BaseTrainer:
 
     #: banner shown when this trainer starts. Subclasses override.
     banner: str = "-------- BaseTrainer --------"
-
     #: prefix for periodic ckpt filenames, e.g. "DynamicISP" -> "DynamicISP_iter_100.pth"
     ckpt_prefix: str = "ISP"
 
@@ -202,26 +201,81 @@ class BaseTrainer:
             return f"{op_name}({first:.2f},+{phys.size - 1})"
         return f"{op_name}({first:.2f})"
 
+    def _shadow_rollout(self, single_img: torch.Tensor) -> list[tuple[str, "np.ndarray | None"]]:
+        """Run one T-step eval-argmax rollout on a `(1,3,H,W)` image.
+
+        Shared by both trainers for the print block's `rollout` section.
+        Returns per-step `(op_name, phys)` pairs — `phys is None` marks STOP.
+        Rendering (bare names + collapse, or full params) is `_fmt_rollout`.
+        """
+        T_max = int(self.cfg.test_steps)
+        self.controller.eval()
+        with torch.no_grad():
+            state = self.runtime.initial_state(single_img.clone())
+            steps: list[tuple[str, "np.ndarray | None"]] = []
+            for _t in range(T_max):
+                c = self.search_space.valid_actions(state)
+                o = self.controller.act(state, c)
+                if o.action.is_stop[0].item() and not state.stopped[0].item():
+                    steps.append(("STOP", None))
+                    break
+                idx = int(o.action.op_indices[0].item())
+                name = self.cfg.operators[idx]
+                dim = self.runtime.operators[name].spec.dim
+                phys = o.action.params[0, :dim].detach().cpu().numpy()
+                steps.append((name, phys))
+                state = self.runtime.step(state, o.action)
+                if state.stopped[0].item():
+                    break
+        self.controller.train()
+        return steps
+
     @staticmethod
-    def _make_window() -> dict:
+    def _fmt_rollout(steps: list, with_params: bool = False) -> str:
+        """Render a shadow-rollout step list for the print block.
+
+        Default (`with_params=False`): bare op names joined by ` → `.
+        Debug mode: full expansion with each pick's first physical parameter.
+        """
+        parts = [s if p is None else (s if not with_params
+                                      else BaseTrainer._fmt_step(s, p))
+                 for s, p in steps]
+        return " → ".join(parts) if parts else "(none)"
+
+    @staticmethod
+    def _make_window(n_ops: int = 0) -> dict:
         """Windowed accumulators for reward-breakdown + policy diagnostics.
 
-        `n_steps` counts per-step samples in-window (both trainers accumulate
-        one entry per per-step reward compute — Detection's per-iter step and
-        Human's per-rollout step both fit).
+        Statistics semantics (see docs/TRAINING_LOG.md):
+          - additive quantities (task / penalties / total) are accumulated as
+            per-step batch means; dividing by `n_iters` at print time yields
+            per-rollout totals, dividing by `n_steps` yields per-step means.
+          - `n_steps` counts per-step samples in-window (both trainers
+            accumulate one entry per per-step reward compute — Detection's
+            per-iter step and Human's per-rollout step both fit).
+          - `pdf_sum` / `pdf_n` (only when `n_ops > 0`) accumulate the raw
+            action pdf for the print block's `top_prob` line.
         """
-        return {
+        win = {
             'n_iters': 0, 'n_steps': 0,
             'task': 0.0, 'ent_pen': 0.0, 'use': 0.0, 'estop': 0.0,
-            'ovfl': 0.0, 'stop_b': 0.0, 'runt': 0.0,
+            'ovfl': 0.0, 'stop_b': 0.0, 'runt': 0.0, 'total': 0.0,
             'pol_ent': 0.0, 'argmax_hits': 0, 'argmax_seen': 0,
             'n_stop': 0, 'n_stop_learned': 0, 'n_stop_timelimit': 0,
+            'len_sum': 0, 'n_samples': 0,
         }
+        if n_ops:
+            win['pdf_sum'] = np.zeros(n_ops + 1, dtype=np.float64)   # + STOP col
+            win['pdf_n'] = 0
+        return win
 
     @staticmethod
     def _reset_window(win: dict) -> None:
-        for k in win:
-            win[k] = 0 if isinstance(win[k], int) else 0.0
+        for k, v in win.items():
+            if isinstance(v, np.ndarray):
+                win[k] = np.zeros_like(v)
+            else:
+                win[k] = 0 if isinstance(v, int) else 0.0
 
     def _accumulate_window(
         self,
@@ -248,9 +302,13 @@ class BaseTrainer:
         win['runt'] += float(breakdown.runtime_penalty.mean().item())
         if getattr(breakdown, 'stop_bonus', None) is not None:
             win['stop_b'] += float(breakdown.stop_bonus.mean().item())
+        win['total'] += float(breakdown.total.mean().item())
         win['pol_ent'] += float(entropy.mean().item())
 
         with torch.no_grad():
+            if 'pdf_sum' in win:
+                win['pdf_sum'] += ctrl_out.pdf.detach().sum(dim=0).cpu().numpy()
+                win['pdf_n'] += int(ctrl_out.pdf.shape[0])
             argmax_idx = ctrl_out.logits.argmax(dim=-1)
             sampled_idx = torch.where(
                 ctrl_out.action.is_stop,

@@ -69,6 +69,10 @@ bash debug/smoke/run.sh    # 7 项：imports / operators / pipeline / front_isp
 
 ### Human Quality（FiveK + Expert C）
 
+Human 系列配置统一继承 `configs/base/human.yaml`（`base:` 键声明，
+加载时递归合并——dict 深合并、list 整体替换），变体只写差异：
+PPO（`rl_algo.name: ppo` + `min_rollout_length: 3`）已是 base 默认。
+
 ```bash
 # 基线（无 Front ISP，identity）
 python tools/train.py --task human \
@@ -106,24 +110,31 @@ python tools/train.py --task detection \
 # ckpt → experiments/lod-my_lod/ckpt/DynamicISP_iter_*.pth
 ```
 
-### 关键配置项（`configs/adaptiveisp.yaml` 为完整参考）
+### 关键配置项（`configs/base/human.yaml` 为 Human 系列共享基座）
+
+Human 变体通过 `base: configs/base/human.yaml` 继承共享配置，只覆盖
+差异；Detection 主配置 `configs/adaptiveisp.yaml` 保持自包含（含全部
+键的注释参考）：
 
 ```yaml
+base: configs/base/human.yaml    # 变体头部声明继承
+
 front_isp:
   enabled: true
   type: identity | fixed | learnable | external   # 四种模式，见下表
   # 各模式自己的内部配置（fixed.params / learnable.* / external.backend ...）
+
+rl_algo:
+  name: ppo | actor_critic          # human 默认 ppo；detection 默认 actor_critic
+  ppo: {epochs: 4, clip_range: 0.2, ...}
 
 action_mask:            # V3 动作约束（默认全关 = 无约束）
   no_repeat:  {enabled: false}        # 禁止同一算子二次选择（exempt 白名单）
   order:      {enabled: false, rules: []}   # before/after 顺序约束
   group_budget: {enabled: false, groups: []} # 相关算子组配额
 
-rl_algo:
-  name: actor_critic | ppo            # ppo = T-step rollout + GAE + clip
-
 test_steps: 8            # rollout 长度
-min_rollout_length: 1    # 最少步数（之前禁用 STOP）
+min_rollout_length: 3    # 最少步数（之前禁用 STOP；PPO 必需，防"一步即停"塌缩）
 ```
 
 四种 Front ISP 模式：
@@ -140,27 +151,36 @@ legacy 类型名（`none` / `canonical` / `infinite_isp` / `modular_neural_isp`�
 
 ### 训练日志怎么看
 
-每 `print_freq` iters 打一个块（Human 分支；Detection 格式相同，loss 行
-为 `agent/val/detect/reward`，example 行为 canary/batch/fresh 三条
-eval-argmax shadow rollout）：
+每 `print_freq` iters 打一个块，Human 分四节（reward / policy / quality /
+rollout），Detection 只保留 loss + rollout + ops：
 
 ```
------ iter N/M [HH:MM:SS] elapsed T | X.XX it/s | ETA T -----
-  loss     agent=... val=... Q_0=+... Q_T=+... ΔQ=+... SSIM=... LPIPS=...
-  reward   task=+... ent=-... use=-... estop=-... ovfl=-... [stop+=+...] [runt=-...]
-  policy   entropy=X.XXX/log(n+1)  argmax=XX%  stop=XX% (learned=XX%, timelimit=XX%)
-  example  sample 0  Q_0=+... → Q_T=+... (ΔQ=+...)
-           picks: exposure(0.42) → n_gamma(0.71) → STOP
-  ops      window(N) top: exposure:12 whitebalance:8 ...
-           cum neural NN/NN = X%
+----- iter 120/1000 | elapsed 0:12:34 | 0.52 it/s | ETA 0:28:24 -----
+
+reward   total=-2.179
+         task=-0.801 | use=-1.250 | estop=-0.125 | ent=-0.001 | ovfl=-0.002
+
+policy   loss=-0.0805  value=57.1235
+         entropy=2.724/2.773  stop=39%  avg_len=6.4/7
+         top_prob: sharpen=7.5%  ccm=7.3%  n_awb=7.1%  STOP=6.9%
+
+quality  Q     +0.8105 → +0.5083   Δ=-0.3023
+         SSIM  0.6xxx → 0.7198    Δ=+0.0xxx
+         LPIPS 0.3xxx → 0.4230   Δ=+0.0xxx
+
+rollout  canary : sharpen → sharpen → sharpen → tone → n_gain → STOP
+         batch  : sharpen → sharpen → ccm → STOP
+         fresh  : exposure → n_gamma → STOP
+         ops(32): whitebalance=6  ccm=4  sharpen=4
 ```
 
-- `reward`：总奖励按 task 增量 / 熵惩罚 / 使用惩罚 / 早停惩罚 / 溢出
-  惩罚（+可选 stop bonus、runtime 惩罚）分解；
-- `policy`：熵 vs 上限、argmax 命中率（探索 vs 锁定）、STOP 里 learned
-  vs 到时强制停的占比；
-- `example`：sample 0 的完整算子序列（带首参数）；
-- `ops`：窗口内选择频次 top6 + neural 算子累计占比。
+- `quality` 的 A → B 是 Front ISP 起点 → AdaptiveISP 终点，Δ 直接反映
+  Controller 改善还是破坏了输入；
+- `rollout` 默认只显示算子名；`ADAPTIVEISP_LOG_DEBUG=1` 展开逐算子参数
+  并追加 PPO 的 kl/clipfrac 诊断。
+
+各节统计口径（reward 为每 rollout 累计、quality 为即时批均值等）与
+完整阅读指南见 [docs/TRAINING_LOG.md](docs/TRAINING_LOG.md)。
 
 ## 评估
 
@@ -222,10 +242,8 @@ python scripts/summarize_ablation_v31.py    # 汇总三张表 → experiments/ab
 当前 cache 上这套消融的完整结果与五条主要发现见
 [docs/VERSION_HISTORY.md §4](docs/VERSION_HISTORY.md#4-v31--front-isp-四模式当前版本)。
 
-仍随库发行的 V3 历史消融脚本：`scripts/run_v3_ablation.sh`（detection
-E0–E3）、`scripts/run_v3_human_ablation.sh`（human H0–H3）、
-`scripts/run_v3_human_s5_variants.sh`（H3-s5 变体）、
-`scripts/val_v3_ablation.sh`、`scripts/summarize_ablations.py`。
+注意：该批 A–E 结果跑于 actor_critic；human 系列 RL 算法已于之后切换为
+PPO（base 默认），后续复跑的数字与那批结果不可直接比较。
 
 ## FiveK 数据准备（Human 任务）
 

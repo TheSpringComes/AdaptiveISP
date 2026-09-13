@@ -80,20 +80,18 @@ def main():
     lines.append("## 表 3 — 基础算子选择频率（全程累计，%）\n")
     base_ops = ["exposure", "gamma", "ccm", "whitebalance", "tone", "contrast",
                 "saturation", "sharpen", "denoise", "wnb"]
-    header = "| 组 | " + " | ".join(base_ops) + " | neural% | total picks |"
+    header = "| 组 | " + " | ".join(base_ops) + " | total picks |"
     lines.append(header)
-    lines.append("|" + "---|" * (len(base_ops) + 3))
+    lines.append("|" + "---|" * (len(base_ops) + 2))
     for g, d, _ in GROUPS:
         r = runs.get(g) or {}
         picks = r.get("op_pick_cum") or {}
         total = sum(picks.values())
         if not total:
-            lines.append(f"| {g} | " + " | ".join(["—"] * len(base_ops)) + " | — | — |")
+            lines.append(f"| {g} | " + " | ".join(["—"] * len(base_ops)) + " | — |")
             continue
-        neural = sum(v for k, v in picks.items() if k.startswith("n_"))
         cells = [f"{100 * picks.get(op, 0) / total:.1f}" for op in base_ops]
-        lines.append(f"| {g} | " + " | ".join(cells)
-                     + f" | {100 * neural / total:.1f} | {total} |")
+        lines.append(f"| {g} | " + " | ".join(cells) + f" | {total} |")
     lines.append("")
 
     # ---- 训练曲线 ----
@@ -124,7 +122,7 @@ def main():
 4. **算子选择频率**（表 3）：五组一致以 exposure 为最高频选择
    （11.6–13.6%），印证曝光/亮度校正是 AdaptiveISP 首要动作；
    白平衡/wb 类算子占比普遍低于 exposure，因为多数 Front ISP 已前置
-   处理了色偏。neural 算子总占比约 30–31%，各组无显著分化。
+   处理了色偏。
 
 5. **对 C 组的解读**：learnable 两阶段在 1500-iter Stage 1 预算下
    尚未追上 fixed 的拟合质量（0.362 vs 0.850）；Stage 1 需要显著

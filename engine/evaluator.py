@@ -217,6 +217,7 @@ def _evaluate_detection(
         feature_dim=cfg.feature_extractor_dims,
         dropout_keep_prob=cfg.dropout_keep_prob,
         exploration=cfg.exploration, max_steps=cfg.test_steps,
+        min_rollout_length=int(cfg.get('min_rollout_length', 1)),
     ).to(device)
     controller.load_state_dict(ckpt_dict['controller_model'])
     controller.eval()
@@ -367,6 +368,7 @@ def _evaluate_human(
         feature_dim=cfg.feature_extractor_dims,
         dropout_keep_prob=cfg.dropout_keep_prob,
         exploration=cfg.exploration, max_steps=cfg.test_steps,
+        min_rollout_length=int(cfg.get('min_rollout_length', 1)),
     ).to(device)
     controller.load_state_dict(ckpt_dict['controller_model'])
     controller.eval()
@@ -432,7 +434,8 @@ def _evaluate_human(
         f"  LPIPS: {metrics['val/lpips']:.4f}",
         f"  PSNR:  {metrics['val/psnr']:.2f} dB   ΔE76: {metrics['val/delta_e']:.2f}",
         f"  Q:     {metrics['val/quality']:+.4f}",
-        f"  mean rollout length: {metrics['val/mean_length']:.2f}/{T}",
+        # 分母为可达上限 T-1：最后一步恒为强制 STOP，不执行算子。
+        f"  mean rollout length: {metrics['val/mean_length']:.2f}/{max(T - 1, 1)}",
         f"  pct learned-STOP (before time-limit): "
         f"{100 * metrics['val/pct_learned_stop']:.1f}%",
         "===============================",
