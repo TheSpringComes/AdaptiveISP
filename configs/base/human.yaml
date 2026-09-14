@@ -79,13 +79,13 @@ summary_freq: 100
 show_img_num: 5
 
 # ---------- Reward / rollout ----------
-critic_logit_multiplier: 10      # 终端奖励 = ΔQ × 此值
+critic_logit_multiplier: 1      # 终端奖励 = ΔQ × 此值
 discount_factor: 1.0
 filter_usage_penalty: 5.0        # 重复惩罚 2^k × 5（第 2 次 10、第 3 次 20）
 all_reward: 1.0
 exploration: 0.2                 # ε-mix（为算子覆盖面从 V1 的 0.05 调高）
 exploration_penalty: 0.05
-early_stop_penalty: 1.0
+early_stop_penalty: 10.0
 use_penalty: true
 test_steps: 8                    # rollout 长度 T
 grad_clip_norm: 1.0e-05          # op-param 路径的梯度裁剪

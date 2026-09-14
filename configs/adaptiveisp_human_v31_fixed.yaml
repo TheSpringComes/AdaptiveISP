@@ -12,6 +12,23 @@
 #       --save_path v31_fixed
 base: configs/base/human.yaml
 
+operators:
+  - exposure
+  - gamma
+  - ccm
+  - sharpen
+  - denoise
+  - tone
+  - contrast
+  - saturation
+  - wnb
+  - whitebalance
+  - n_awb
+  - n_gain
+  - n_gtm
+  - n_chroma
+  - n_gamma
+
 front_isp:
   enabled: true
   type: fixed
