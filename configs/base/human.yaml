@@ -40,10 +40,22 @@ front_isp:
   enabled: false
   type: identity
 
-# ---------- Action Mask（V3-A2 硬先验；默认全关） ----------
+# ---------- Action Mask（V3-A2 硬先验；2026-09-14 启用） ----------
+# no_repeat: 每算子每 rollout 单次使用（count≥1 ⇒ mask），最严格版本。
+#   直接消除 sharpen → sharpen → sharpen 死循环。后续 max_usage 配置化
+#   时改用 group_budget 或给 NoRepeatMask 加 per-op 上限。
+# order (precedence): after 组任一算子已用 ⇒ before 组永久 mask。
+#   partial order——不强制先做 before，只是做了 after 就不能回头。
 action_mask:
-  no_repeat:    {enabled: false, exempt: []}
-  order:        {enabled: false, rules: []}
+  no_repeat:    {enabled: true, exempt: []}
+  order:
+    enabled: true
+    rules:
+      - {after: [sharpen],   before: [denoise]}       # 锐化后禁去噪
+      - {after: [sharpen],   before: [n_denoise]}     # n_denoise 未启用，激活后自动生效
+      - {after: [saturation], before: [whitebalance]} # 调饱和后禁白平衡
+      - {after: [saturation], before: [n_awb]}
+      - {after: [saturation], before: [ccm]}          # 调饱和后禁色彩矩阵
   group_budget: {enabled: false, groups: []}
 
 # ---------- RL 算法：PPO（human 任务默认） ----------
@@ -79,6 +91,20 @@ summary_freq: 100
 show_img_num: 5
 
 # ---------- Reward / rollout ----------
+# Reward 模式：'stepwise'（默认，逐步稠密 ΔQ + progress-gated stop，见
+# controller/adaptiveisp/human_reward.py 的 StepwiseHumanReward）或
+# 'terminal'（旧终端稀疏奖励，消融对照用）。
+#   stepwise: r_t = α·ΔQ_t − P_use − P_run − P_invalid
+#                     + 1[STOP]·β·max(Q(I_t) − Q(I_0), 0)
+# 下方 terminal 专用键（critic_logit_multiplier / early_stop_penalty /
+# exploration_penalty / filter_usage_penalty 等）只在 reward_mode: terminal
+# 时被消费。
+reward_mode: stepwise
+quality_scale: 5.0                 # α：逐步 ΔQ 的缩放
+stop_bonus_beta: 1.0               # β：stop 奖励 = β·max(Q_t − Q_0, 0)
+usage_penalty: 0.01               # 重复使用守卫 2^k × 此值（远小于典型 ΔQ 0.02–0.08）
+invalid_penalty: 0.1               # 溢出线性罚系数（untrained CCM 溢出≈0.6 → 罚 0.06 < ΔQ）；NaN 恒罚 1.0
+# ---- terminal 模式专用（stepwise 下忽略）----
 critic_logit_multiplier: 1      # 终端奖励 = ΔQ × 此值
 discount_factor: 1.0
 filter_usage_penalty: 5.0        # 重复惩罚 2^k × 5（第 2 次 10、第 3 次 20）

@@ -97,10 +97,26 @@ rollout
 | policy 的 loss / value | 自训练开始以来的累计均值 |
 | quality | 打印时刻所在 iter 的**即时批均值**（非窗口平均） |
 
-`task` 与 `ΔQ` 的对应：全长度 rollout 下
-`task = ΔQ × critic_logit_multiplier`（human 配置 ×10）。注意早停样本的
-终端项在其停止后的每一步都会重复计入（图像已冻结、值不变），这类样本
-会使 `task` 偏大——比较时以 quality 节的 Δ 为准。
+`task` 与 `ΔQ` 的对应（两种 reward 模式不同）：
+
+- **terminal 模式**（旧）：全长度 rollout 下
+  `task = ΔQ × critic_logit_multiplier`。早停样本的终端项在其停止后的
+  每一步都会重复计入（图像已冻结、值不变），会使 `task` 偏大——比较时
+  以 quality 节的 Δ 为准。
+- **stepwise 模式**（默认，2026-09-13 起）：`task = Σ α·ΔQ_t ≈ α·(Q_T − Q_0)`，
+  逐步 telescoping，无重复计入；`stop+` 为 progress-gated stop 奖励
+  `β·max(Q_t − Q_0, 0)`（仅在策略主动 STOP 的那一步发放）；
+  `estop` / `ent` 恒为 0（该模式不使用这两项塑形）。
+
+## reward 模式（`reward_mode`）
+
+| 模式 | task 项 | STOP 塑形 | 守卫惩罚 |
+|---|---|---|---|
+| `terminal`（对照用） | 仅终端步 `ΔQ_global × m` | 固定 `early_stop_penalty` | usage(5.0)/ent(0.05)/ovfl |
+| `stepwise`（默认） | 每步 `α·ΔQ_t` | `β·max(Q_t − Q_0, 0)`，无改善即 0 | usage(0.002)/runtime/invalid(1.0)，均远小于典型 ΔQ |
+
+stepwise 的设计说明见 `controller/adaptiveisp/human_reward.py` 模块注释；
+验证目标：STOP 不再集中在 step 1、avg_len 恢复合理、Q_T − Q_0 提升。
 
 ## debug 模式
 

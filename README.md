@@ -128,10 +128,14 @@ rl_algo:
   name: ppo | actor_critic          # human 默认 ppo；detection 默认 actor_critic
   ppo: {epochs: 4, clip_range: 0.2, ...}
 
-action_mask:            # V3 动作约束（默认全关 = 无约束）
-  no_repeat:  {enabled: false}        # 禁止同一算子二次选择（exempt 白名单）
-  order:      {enabled: false, rules: []}   # before/after 顺序约束
-  group_budget: {enabled: false, groups: []} # 相关算子组配额
+action_mask:            # 硬先验（base 默认启用）
+  no_repeat:  {enabled: true, exempt: []}     # 每算子每 rollout 单次使用
+  order:                              # after 已用 ⇒ before 永久 mask（partial order）
+    enabled: true
+    rules:
+      - {after: [sharpen],    before: [denoise]}
+      - {after: [saturation], before: [whitebalance, n_awb, ccm]}
+  group_budget: {enabled: false, groups: []}  # 后续 max_usage 配置化走这里
 
 test_steps: 8            # rollout 长度
 min_rollout_length: 3    # 最少步数（之前禁用 STOP；PPO 必需，防"一步即停"塌缩）

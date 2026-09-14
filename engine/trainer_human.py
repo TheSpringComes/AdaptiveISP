@@ -106,22 +106,45 @@ class HumanTrainer(BaseTrainer):
         for p in self.front_isp.parameters():
             p.requires_grad_(False)
 
-        self.reward_fn = HumanReward(
-            n_ops=len(cfg.operators),
-            max_steps=cfg.test_steps,
-            lambda_ssim=self.task_model.lambda_ssim,
-            lambda_lpips=self.task_model.lambda_lpips,
-            lpips_net=self.task_model.lpips_net,
-            critic_logit_multiplier=cfg.critic_logit_multiplier,
-            all_reward=cfg.all_reward,
-            filter_usage_penalty=cfg.filter_usage_penalty,
-            exploration_penalty=cfg.exploration_penalty,
-            early_stop_penalty=cfg.early_stop_penalty,
-            runtime_penalty_enabled=cfg.filter_runtime_penalty,
-            runtime_penalty_lambda=cfg.filter_runtime_penalty_lambda,
-            runtime_costs=cfg.filters_runtime,
-            use_penalty=cfg.use_penalty,
-        )
+        # Reward 变体切换：cfg.reward_mode = 'stepwise'（逐步稠密奖励，
+        # StepwiseHumanReward）| 'terminal'（默认，旧终端稀疏 HumanReward）。
+        reward_mode = str(cfg.get('reward_mode', 'terminal')).lower()
+        self.reward_mode = reward_mode  # print block reads it in train()
+        if reward_mode == 'stepwise':
+            from controller.adaptiveisp.human_reward import StepwiseHumanReward
+            self.reward_fn = StepwiseHumanReward(
+                n_ops=len(cfg.operators),
+                max_steps=cfg.test_steps,
+                lambda_ssim=self.task_model.lambda_ssim,
+                lambda_lpips=self.task_model.lambda_lpips,
+                lpips_net=self.task_model.lpips_net,
+                quality_scale=float(cfg.get('quality_scale', 1.0)),          # α
+                stop_bonus_beta=float(cfg.get('stop_bonus_beta', 1.0)),      # β
+                usage_penalty=float(cfg.get('usage_penalty', 0.002)),
+                runtime_penalty_enabled=cfg.filter_runtime_penalty,
+                runtime_penalty_lambda=float(cfg.get('runtime_penalty_lambda', 0.0005)),
+                runtime_costs=cfg.filters_runtime,
+                invalid_penalty=float(cfg.get('invalid_penalty', 1.0)),
+            )
+            print("reward mode: STEPWISE (dense per-step ΔQ + progress-gated stop)")
+        else:
+            self.reward_fn = HumanReward(
+                n_ops=len(cfg.operators),
+                max_steps=cfg.test_steps,
+                lambda_ssim=self.task_model.lambda_ssim,
+                lambda_lpips=self.task_model.lambda_lpips,
+                lpips_net=self.task_model.lpips_net,
+                critic_logit_multiplier=cfg.critic_logit_multiplier,
+                all_reward=cfg.all_reward,
+                filter_usage_penalty=cfg.filter_usage_penalty,
+                exploration_penalty=cfg.exploration_penalty,
+                early_stop_penalty=cfg.early_stop_penalty,
+                runtime_penalty_enabled=cfg.filter_runtime_penalty,
+                runtime_penalty_lambda=cfg.filter_runtime_penalty_lambda,
+                runtime_costs=cfg.filters_runtime,
+                use_penalty=cfg.use_penalty,
+            )
+            print("reward mode: TERMINAL (legacy sparse ΔQ at rollout end)")
 
         n_params = sum(p.numel() for p in self.controller.parameters())
         print(f"HumanTrainer Controller parameters: {n_params / 1e6:.2f}M")
@@ -245,6 +268,9 @@ class HumanTrainer(BaseTrainer):
             agent_losses: list[torch.Tensor] = []
             reward_totals: list[torch.Tensor] = []
             q_final_parts: dict[str, torch.Tensor] = {}
+            # Stepwise reward：q_before = 上一步的 Q(I_{t+1})（t=0 时即
+            # Q(I_0)）。逐步传递，每步只需一次新的 SSIM+LPIPS 前向。
+            q_before = q_initial
             # V3-E3 PPO branch state
             if use_ppo:
                 buf = self._TrajectoryBuffer(max_steps=T, batch_size=imgs.shape[0])
@@ -265,10 +291,14 @@ class HumanTrainer(BaseTrainer):
                     image_initial=imgs, target=targets,
                     state_before=state, action=ctrl_out.action, state_after=new_state,
                     entropy=ctrl_out.entropy, progress=progress, q_initial=q_initial,
+                    q_before=q_before,
                 )
                 reward_totals.append(r.mean().detach())
                 if q_parts:
                     q_final_parts = q_parts
+                    # Dense 模式下 q_parts 每步都有（Q(I_{t+1})）；terminal
+                    # 模式下仅终端步有 —— 两种情况都把最新 Q 传给下一步。
+                    q_before = q_parts['quality']
 
                 # V2-AI (A+C): accumulate reward-breakdown + policy stats.
                 self._accumulate_window(win, breakdown, ctrl_out.entropy, ctrl_out,
@@ -279,7 +309,9 @@ class HumanTrainer(BaseTrainer):
                     # update AND accumulate image-differentiable op-param loss
                     # (task_delta − overflow_penalty). Alive samples only —
                     # already-stopped ones' image is untouched by the executor,
-                    # so their task_delta is ~0 anyway.
+                    # so their task_delta is ~0 anyway. 两种 reward 模式下
+                    # 图像可微项同为 task_delta − overflow（stepwise 的
+                    # overflow 字段承载的是 invalid_penalty）。
                     alive_mask = (~state.stopped).float().unsqueeze(-1)
                     param_loss_terms.append(
                         -((breakdown.task_delta - breakdown.overflow_penalty) * alive_mask).mean()
@@ -424,20 +456,25 @@ class HumanTrainer(BaseTrainer):
                 # reward — per-rollout totals (batch mean, averaged over the
                 # window's iters): total = task − use − estop − ent − ovfl
                 # (+ activated stop+ / runt). Per-rollout so `task` maps
-                # directly onto the quality block's ΔQ (task ≈ ΔQ × m).
+                # directly onto the quality block's ΔQ. Stepwise 模式下
+                # task = Σ α·ΔQ_t ≈ α·(Q_T − Q_0)，stop+ 是 progress-gated
+                # stop 奖励（estop/ent 恒为 0）。
                 wi = max(1, win['n_iters'])
+                stepwise = self.reward_mode == 'stepwise'
                 bits_r = [
                     f"task={win['task'] / wi:+.3f}",
                     f"use=-{win['use'] / wi:.3f}",
-                    f"estop=-{win['estop'] / wi:.3f}",
-                    f"ent=-{win['ent_pen'] / wi:.3f}",
-                    f"ovfl=-{win['ovfl'] / wi:.3f}",
                 ]
-                if float(self.cfg.get('stop_bonus_scale', 0.0)) != 0.0:
+                if not stepwise:
+                    bits_r.append(f"estop=-{win['estop'] / wi:.3f}")
+                    bits_r.append(f"ent=-{win['ent_pen'] / wi:.3f}")
+                bits_r.append(f"ovfl=-{win['ovfl'] / wi:.3f}")
+                if stepwise or float(self.cfg.get('stop_bonus_scale', 0.0)) != 0.0:
                     bits_r.append(f"stop+={win['stop_b'] / wi:+.3f}")
                 if self.cfg.filter_runtime_penalty:
                     bits_r.append(f"runt=-{win['runt'] / wi:.3f}")
-                print(f"reward   total={win['total'] / wi:+.3f}     {' | '.join(bits_r)}")
+                print(f"reward   total={win['total'] / wi:+.3f}")
+                print(f"         {' | '.join(bits_r)}")
 
                 # policy — loss / value are cumulative means over iters;
                 # entropy / stop / avg_len / top_prob are per-decision or
