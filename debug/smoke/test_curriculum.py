@@ -46,18 +46,26 @@ def test_schedule():
 
 
 def test_backward_compat_s1():
-    """s=1 必须与原 regressor 逐位一致（含全部 26 算子随机采样）。"""
+    """s=1 时非 blend 算子与原 regressor 逐位一致；blend 算子走 tanh²
+    （语义替换：raw=0 → α≈0 恒 identity，不再经过旧 σ(z)=0.5）。"""
     from isp.registry import CANONICAL_ORDER
+    from isp.curriculum import _MODES
     torch.manual_seed(0)
     for name in CANONICAL_ORDER:
         op = build_operator(name)
         dim = op.spec.dim
         raw = torch.randn(8, dim) * 3.0
         with torch.no_grad():
-            p_old = op.spec.regressor(raw)
             p_new = scale_params(name, op.spec, raw, 1.0)
-        assert torch.equal(p_old, p_new), f"{name}: s=1 not bit-identical"
-    print("smoke/curriculum: s=1 bit-identical across 26 ops ✓")
+        if _MODES.get(name, "linear") == "blend":
+            high = float(op.spec.high)
+            assert p_new.min() >= 0.0 and p_new.max() <= high + 1e-7, name
+            assert p_new.mean() > 0, name   # 非退化
+        else:
+            with torch.no_grad():
+                p_old = op.spec.regressor(raw)
+            assert torch.equal(p_old, p_new), f"{name}: s=1 not bit-identical"
+    print("smoke/curriculum: s=1 semantics verified (non-blend bit-identical, blend=tanh²) ✓")
 
 
 def _sample_scaled(name, s, n=512, seed=0):
@@ -98,14 +106,17 @@ def test_blend_space():
     # n_gamma（neural α）: p' ∈ [0, s]，0 = identity 保留
     op, p = _sample_scaled("n_gamma", 0.3)
     assert p.min() >= 0.0 and p.max() <= 0.3 + 1e-6, (p.min(), p.max())
-    # sharpen: p' ∈ [0, 10s]，identity 0 保留
-    op, p = _sample_scaled("sharpen", 0.2)
-    assert p.min() >= 0.0 and p.max() <= 10.0 * 0.2 + 1e-6
-    # denoise / saturation 同为 [0,1] blend
-    for name in ("denoise", "saturation", "wnb"):
+    # denoise / saturation 同为 [0,1] blend（tanh²: raw=0 → α≈0）
+    for name in ("denoise", "saturation", "wnb", "n_awb", "n_gain"):
         op, p = _sample_scaled(name, 0.25)
         assert p.min() >= 0.0 and p.max() <= 0.25 + 1e-6, name
-    print("smoke/curriculum: blend space (n_*/sharpen/denoise/saturation/wnb) ✓")
+        # raw=0 → 图像级 identity
+        img = torch.rand(2, 3, 16, 16)
+        p0 = scale_params(name, op.spec, torch.zeros(2, 1), 1.0)
+        out = op.apply(img, p0)
+        assert (out - img).abs().max().item() < 1e-5, name
+    # sharpen：factor 是 blur↔sharpen 混合，无 identity 点 → linear 收缩（CHECK-manual）
+    print("smoke/curriculum: blend space (denoise/saturation/wnb/n_*) ✓; sharpen→linear CHECK")
 
 
 def test_bounds_all_ops():

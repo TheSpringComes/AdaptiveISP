@@ -76,14 +76,17 @@ def parse_curriculum_cfg(cfg: dict) -> dict:
 # ccm：identity-centered residual——regressor 已输出 M = I + δ·tanh(z)，
 # curriculum 在矩阵域做 residual 缩放 M' = I + s·(M − I)，发生在 apply 的
 # 行归一化之前（归一化对均匀 residual 缩放不敏感，必须先缩放再归一化）。
-_LINEAR = ("exposure", "contrast", "tone")
+# 无 identity 点、暂用 linear 收缩待人工重定义的算子：
+#   sharpen  — factor 是 blur↔sharpen 混合（1=锐化 0=模糊，轴上无 identity）
+#   inf_ebf  — 参数是 bilateral 的 range-sigma 位置（α=0 → σ=0.05，仍是有效滤波）
+_LINEAR = ("exposure", "contrast", "tone", "sharpen", "inf_ebf")
 _CCM = ("ccm",)
 _LOG = ("gamma", "whitebalance", "inf_digital_gain", "inf_saturation")
-_BLEND = ("sharpen", "denoise", "wnb", "saturation",
+_BLEND = ("denoise", "wnb", "saturation",
           "n_denoise", "n_awb", "n_gain", "n_gtm", "n_chroma",
           "n_gamma", "n_detail",
           "inf_awb_grayworld", "inf_awb_norm2", "inf_awb_pca",
-          "inf_ldci", "inf_unsharp", "inf_nlm", "inf_ebf")
+          "inf_ldci", "inf_unsharp", "inf_nlm")
 
 _MODES = {**{n: "linear" for n in _LINEAR},
           **{n: "ccm" for n in _CCM},
@@ -97,18 +100,29 @@ def scale_params(name: str, spec: ParameterSpec, raw: torch.Tensor,
                  range_scale: float) -> torch.Tensor:
     """带 range_scale 的参数映射：raw（参数头无界输出）→ 物理域。
 
-    `range_scale >= 1` 时走原路径 `spec.regressor(raw)`——与旧行为
-    逐位一致（不开课程的训练/eval 默认即此分支）。
+    blend-strength 算子**无条件**走 tanh² 映射（α = s·high·tanh²(z+b₀)，
+    与 s 无关——这是它们的参数定义，不是课程；raw=0 → α≈0 恒 identity）。
+    其余类型 `range_scale >= 1` 时走原路径 `spec.regressor(raw)`——与
+    旧行为逐位一致（不开课程的训练/eval 默认即此分支）。
     """
-    p = spec.regressor(raw)
+    mode = _MODES.get(name, "linear")
     s = float(range_scale)
+    if mode == "blend":
+        # Blend-strength 参数化（2026-09-15 重设计）：
+        #     α = s · high · tanh²(z + b₀),  b₀ = 0.001
+        # raw=0 → α ≈ s·high·b₀² ≈ 0（identity，而非旧 σ(z) 的半强度 0.5s）；
+        # ∂α/∂z|₀ = 2·s·high·b₀ ≠ 0（tanh² 在零初始化处梯度不为零，b₀ 的作用）；
+        # α ∈ [0, s·high]，s=1 时全幅度，s<1 时从 identity 侧渐开。
+        # 直接计算——不再经过各算子自己的 sigmoid/tanh_range regressor
+        #（那些的零输出是 0.5/中点，正是 audit 发现的 neutral mismatch）。
+        b0 = 0.001
+        high = float(spec.high) if not isinstance(spec.high, tuple) else float(spec.high[0])
+        return (s * high
+                * torch.tanh(raw + b0).pow(2))
+
+    p = spec.regressor(raw)
     if s >= 1.0:
         return p
-
-    mode = _MODES.get(name, "linear")
-    if mode == "blend":
-        # 0 = identity：最大强度按 s 渐开，p' ∈ [0, s·high]。
-        return p * s
 
     if mode == "ccm":
         # Identity-centered residual：regressor 输出 M = I + δ·tanh(z)
