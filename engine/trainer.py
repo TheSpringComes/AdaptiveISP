@@ -235,7 +235,9 @@ class Trainer(BaseTrainer):
         for iter in range(self.cfg.max_iter_step + 1):
             self.controller.train()
             self.task_model.train()
-            progress = float(iter) / self.cfg.max_iter_step
+            progress = float(iter) / max(self.cfg.max_iter_step, 1)
+            # Progressive Parameter Bounds：早期收缩参数范围（关闭时恒 1.0）
+            self._update_range_scale(progress)
 
             if use_ppo:
                 # -------- PPO branch: T-step rollout, no replay --------

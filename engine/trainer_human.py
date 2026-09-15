@@ -154,6 +154,8 @@ class HumanTrainer(BaseTrainer):
         # `images_per_epoch` default = full dataset for Human (Detection uses 1000).
         cfg.setdefault('images_per_epoch', len(self.train_dataset))
         self._finalize_cfg_derived_fields(args, cfg)
+        # Progressive Parameter Bounds（parameter_curriculum: 配置块）
+        self._init_param_curriculum(cfg)
 
         self.cfg = cfg
 
@@ -240,6 +242,8 @@ class HumanTrainer(BaseTrainer):
         for it in range(max_iter_step + 1):
             self.controller.train()
             progress = float(it) / max(max_iter_step, 1)
+            # Progressive Parameter Bounds：早期收缩参数范围（关闭时恒 1.0）
+            self._update_range_scale(progress)
 
             imgs, targets, cam_ids = self._next_batch()
             imgs = imgs.to(self.device, non_blocking=True).float()
@@ -584,6 +588,10 @@ class HumanTrainer(BaseTrainer):
         TensorBoard. Returns the metrics dict for the caller's log/summary use.
         """
         self.controller.eval()
+        # Validation 始终用完整参数范围（range_scale=1.0）——课程只是训练期
+        # 的探索辅助，不改变评估语义。
+        prev_scale = self.controller.range_scale
+        self.controller.range_scale = 1.0
         T = int(self.cfg.test_steps)
         from tasks.human_quality import psnr_batch, delta_e_batch
         ssim_sum, lpips_sum, q_sum, len_sum, stop_count, n = 0.0, 0.0, 0.0, 0, 0, 0
@@ -648,6 +656,7 @@ class HumanTrainer(BaseTrainer):
         print(f"  mean rollout length: {metrics['val/mean_length']:.2f}/{max(T - 1, 1)}")
         print(f"  pct learned-STOP (before time-limit): {100 * metrics['val/pct_learned_stop']:.1f}%")
         print("=================================\n")
+        self.controller.range_scale = prev_scale   # 恢复训练期课程状态
         return metrics
 
 

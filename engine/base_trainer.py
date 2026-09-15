@@ -135,6 +135,22 @@ class BaseTrainer:
 
     # -------------------- optimizer + resume + save --------------------
 
+    def _init_param_curriculum(self, cfg) -> None:
+        """Parse `parameter_curriculum:` block (default disabled).
+
+        Disabled → controller.range_scale stays 1.0 forever → bit-identical
+        to pre-curriculum behavior.
+        """
+        from isp.curriculum import parse_curriculum_cfg
+        self._param_curriculum = parse_curriculum_cfg(cfg)
+
+    def _update_range_scale(self, progress: float) -> None:
+        """Progressive Parameter Bounds: progress → range_scale, set on the
+        controller. Call once per train iter (both trainers)."""
+        from isp.curriculum import range_scale_for_progress
+        self.controller.range_scale = range_scale_for_progress(
+            progress, **self._param_curriculum)
+
     def _build_optimizer_and_scheduler(self, args, cfg):
         # V3.1 两阶段训练：Stage 2 的 optimizer 只含 Controller —— Front
         # ISP 恒冻结（可学习参数在 Stage 1 由 LearnableTrainer 训练，

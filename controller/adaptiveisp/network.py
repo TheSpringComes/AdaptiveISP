@@ -55,10 +55,21 @@ class FeatureExtractor(nn.Module):
 
 
 def pdf_sample(pdf: torch.Tensor, uniform_noise: torch.Tensor) -> torch.Tensor:
-    """Inverse-CDF sample from a batched pdf, given per-row uniform noise."""
+    """Inverse-CDF sample from a batched pdf, given per-row uniform noise.
+
+    `uniform_noise` is clamped to (ε, 1-ε): an exact 0 (float32 rand hits it
+    with p≈2^-24 per draw — once per ~16M samples, i.e. reliably inside a
+    long training run) made every `cdf_lower < u` comparison False, yielding
+    index -1 → CUDA scatter/gather assert. 1-ε symmetric guard for safety.
+    """
+    uniform_noise = uniform_noise.clamp(1e-6, 1.0 - 1e-6)
     pdf = pdf / (pdf.sum(dim=1, keepdim=True) + 1e-36)
     cdf_lower = torch.cumsum(pdf, dim=1) - pdf
-    return (cdf_lower < uniform_noise).to(torch.int64).sum(dim=1) - 1
+    idx = (cdf_lower < uniform_noise).to(torch.int64).sum(dim=1) - 1
+    # NaN/Inf pdf（上游网络数值异常时）使所有比较为 False → idx=-1；
+    # clamp 到合法列域，让异常表现为后续的 loss/NaN 检查而不是 CUDA
+    # scatter assert（assert 之后整个 CUDA context 报废，训练无法继续）。
+    return idx.clamp(0, pdf.shape[1] - 1)
 
 
 class AdaptiveISPValueNet(nn.Module):

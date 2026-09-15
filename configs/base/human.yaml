@@ -90,6 +90,16 @@ print_freq: 100
 summary_freq: 100
 show_img_num: 5
 
+# ---------- Progressive Parameter Bounds（参数课程） ----------
+# 训练前期限制参数调整幅度，随进度放宽到完整范围（isp/curriculum.py）。
+# schedule: quadratic（先慢后快）; progress ≥ end_progress 后恒为完整范围。
+# 关闭（enabled: false）时与旧行为逐位一致；val/eval 恒用完整范围。
+parameter_curriculum:
+  enabled: true
+  start_scale: 0.2        # progress=0 时开放的参数范围比例
+  end_progress: 0.25       # 训练前 25% 期间渐开；之后恒 1.0
+  schedule: quadratic
+
 # ---------- Reward / rollout ----------
 # Reward 模式：'stepwise'（默认，逐步稠密 ΔQ + progress-gated stop，见
 # controller/adaptiveisp/human_reward.py 的 StepwiseHumanReward）或

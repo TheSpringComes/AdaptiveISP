@@ -14,6 +14,7 @@ TESTS=(
   "debug/smoke/test_front_isp.py"
   "debug/smoke/test_learnable.py"
   "debug/smoke/test_controller.py"
+  "debug/smoke/test_curriculum.py"
   "debug/smoke/test_end_to_end.py"
 )
 

@@ -23,6 +23,7 @@ import torch.nn.functional as F
 from controller.base import Controller, ControllerOutput
 from controller.adaptiveisp.network import AdaptiveISPValueNet, FeatureExtractor, pdf_sample
 from isp.base import ISPOperator
+from isp.curriculum import scale_params
 from pipeline.action import ISPAction
 from pipeline.state import PipelineState
 from search.constraint import ConstraintResult
@@ -86,6 +87,10 @@ class AdaptiveISPController(Controller):
         )
         self.exploration = float(exploration)
         self.max_steps = int(max_steps)
+        # Progressive Parameter Bounds：当前参数范围比例。trainer 按
+        # 训练进度设置（isp/curriculum.py）；默认 1.0 = 完整范围——
+        # eval / visualizer 构建的 controller 不设置即始终全范围。
+        self.range_scale: float = 1.0
         # STOP action is forbidden until state.step >= min_rollout_length.
         # =1 (default) matches the pre-tune behavior "STOP forbidden only at
         # step 0". Raise to 3 in E3 configs so PPO can't short-circuit to
@@ -159,7 +164,9 @@ class AdaptiveISPController(Controller):
                 continue
             op = self.operators[name]
             raw = self.param_heads[name](pf[mask])
-            physical = op.spec.regressor(raw)
+            # Progressive bounds：range_scale>=1 时内部直通 spec.regressor
+            # （逐位等于旧行为）；<1 时按算子的缩放空间收缩（见 isp/curriculum.py）。
+            physical = scale_params(name, op.spec, raw, self.range_scale)
             if physical.dim() > 2:
                 physical = physical.reshape(physical.shape[0], -1)
             params_flat[mask, :op.spec.dim] = physical

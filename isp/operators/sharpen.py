@@ -7,7 +7,7 @@ from isp.base import ISPOperator, ParameterSpec, tanh_range
 from isp.registry import register
 from isp.sharpen import adjust_sharpness
 
-_SHARP_LOW, _SHARP_HIGH = 0.0, 10.0  # config.py cfg.sharpen_range
+_SHARP_LOW, _SHARP_HIGH = 0.0, 2.0  # config.py cfg.sharpen_range
 
 
 @register("sharpen")
