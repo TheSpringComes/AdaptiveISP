@@ -35,6 +35,29 @@ class SearchSpace:
         self.n_ops = len(self.canonical_order)
         self.priors: list[Prior] = list(priors) if priors else []
 
+    @staticmethod
+    def policy_mask(
+        state: PipelineState,
+        constraint: ConstraintResult,
+        *,
+        min_rollout_length: int,
+        max_steps: int,
+    ) -> torch.Tensor:
+        """Final categorical support, shared by sampling and probability replay.
+
+        Forced/already-stopped rows are singleton STOP distributions. Encoding
+        this before sampling keeps the stored action and log-prob consistent.
+        """
+        forced = state.stopped | (state.step >= max_steps - 1)
+        stop = constraint.stop_allowed & (state.step >= min_rollout_length)
+        mask = torch.cat([
+            constraint.op_mask & ~forced[:, None],
+            (stop | forced)[:, None],
+        ], dim=1)
+        if not mask.any(dim=1).all():
+            raise ValueError("No valid action before minimum rollout length; check structural priors")
+        return mask
+
     def valid_actions(self, state: PipelineState) -> ConstraintResult:
         """Compose identity base mask with each prior's sub-mask (AND).
 

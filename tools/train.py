@@ -108,6 +108,8 @@ def _run_learnable(args) -> None:
 
 
 def _run_human(args) -> None:
+    from engine.util import set_seed
+    set_seed(args.seed, deterministic=not args.nondeterministic)
     # Human path uses the raw --save_path (no data_name prefix; FiveK/Expert C
     # is implicit). Neural op registry loads via import side effect.
     import isp  # noqa: F401

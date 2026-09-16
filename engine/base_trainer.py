@@ -115,6 +115,7 @@ class BaseTrainer:
             exploration=cfg.exploration,
             max_steps=cfg.test_steps,
             min_rollout_length=int(cfg.get('min_rollout_length', 1)),
+            deterministic_features=bool(cfg.get('deterministic_features', False)),
         ).to(device)
 
     def _finalize_cfg_derived_fields(self, args, cfg) -> None:
@@ -301,6 +302,7 @@ class BaseTrainer:
         state_after,
         n_ops: int,
         max_steps: int,
+        policy_active: Optional[torch.Tensor] = None,
     ) -> None:
         """Add one step's reward-breakdown + policy stats into `win`.
 
@@ -324,17 +326,29 @@ class BaseTrainer:
 
         with torch.no_grad():
             if 'pdf_sum' in win:
-                win['pdf_sum'] += ctrl_out.pdf.detach().sum(dim=0).cpu().numpy()
-                win['pdf_n'] += int(ctrl_out.pdf.shape[0])
-            argmax_idx = ctrl_out.logits.argmax(dim=-1)
+                pdf = ctrl_out.pdf.detach()
+                if policy_active is not None:
+                    pdf = pdf[policy_active]
+                win['pdf_sum'] += pdf.sum(dim=0).cpu().numpy()
+                win['pdf_n'] += int(pdf.shape[0])
+            argmax_idx = ctrl_out.pdf.argmax(dim=-1) if policy_active is not None else ctrl_out.logits.argmax(dim=-1)
             sampled_idx = torch.where(
                 ctrl_out.action.is_stop,
                 torch.full_like(ctrl_out.action.op_indices, n_ops),
                 ctrl_out.action.op_indices,
             )
+            if policy_active is not None:
+                argmax_idx, sampled_idx = argmax_idx[policy_active], sampled_idx[policy_active]
             win['argmax_hits'] += int((argmax_idx == sampled_idx).sum().item())
             win['argmax_seen'] += int(sampled_idx.numel())
 
+        if policy_active is not None:
+            # Human diagnostics count learned decisions, excluding padded or
+            # forced STOP rows. Reward accumulation above is unchanged.
+            learned = int((ctrl_out.action.is_stop & policy_active).sum().item())
+            win['n_stop'] += learned
+            win['n_stop_learned'] += learned
+            return
         is_stop_np = ctrl_out.action.is_stop.detach().cpu().numpy()
         n_stop = int(is_stop_np.sum())
         is_last_step = int((state_after.step == max_steps).sum().item())

@@ -121,7 +121,7 @@ class HumanTrainer(BaseTrainer):
                 lpips_net=self.task_model.lpips_net,
                 lambda_lab_ab=self.task_model.lambda_lab_ab,
                 quality_scale=float(cfg.get('quality_scale', 1.0)),          # α
-                stop_bonus_beta=float(cfg.get('stop_bonus_beta', 1.0)),      # β
+                stop_bonus_beta=float(cfg.get('stop_bonus_beta', 0.0)),      # β
                 usage_penalty=float(cfg.get('usage_penalty', 0.002)),
                 runtime_penalty_enabled=cfg.filter_runtime_penalty,
                 runtime_penalty_lambda=float(cfg.get('runtime_penalty_lambda', 0.0005)),
@@ -168,6 +168,14 @@ class HumanTrainer(BaseTrainer):
         self._init_param_reg(cfg)
 
         self.cfg = cfg
+        if train:
+            # A variant YAML can inherit mutable base files; retain the actual
+            # merged settings so later Q comparisons use the original weights.
+            import yaml
+            with open(os.path.join(self.base_dir, 'resolved_config.yaml'), 'w') as fh:
+                yaml.safe_dump(dict(cfg), fh, allow_unicode=True, sort_keys=False)
+        print(f"policy deterministic_features={self.controller.deterministic_features} "
+              f"full_quality_param_loss={bool(cfg.get('full_quality_param_loss', False))}")
 
         # Fixed canary sample for the print block's `example / canary` rollout.
         # Same rationale as Detection: keeping the input constant across iters
@@ -230,6 +238,9 @@ class HumanTrainer(BaseTrainer):
                     f'Using {self.args.workers} dataloader workers | '
                     f'Logging results to {self.args.save_path}')
 
+        full_quality_params = bool(self.cfg.get('full_quality_param_loss', False))
+        if full_quality_params and (not use_ppo or self.reward_mode != 'stepwise'):
+            raise ValueError('full_quality_param_loss requires stepwise Human PPO training')
         n_ops = len(self.cfg.operators)
         T = int(self.cfg.test_steps)
         mloss_agent, mloss_value = 0.0, 0.0
@@ -243,7 +254,8 @@ class HumanTrainer(BaseTrainer):
         # at print time to give per-rollout totals — see docs/TRAINING_LOG.md).
         # n_ops>0 also enables the pdf accumulator for `top_prob`.
         win = self._make_window(n_ops=n_ops)
-        log_n_ops_plus1 = float(np.log(n_ops + 1))
+        win.update(entropy_sum=0.0, entropy_max_sum=0.0, entropy_norm_sum=0.0,
+                   entropy_count=0)
 
         t_start = time.perf_counter()
         t_prev_print = t_start
@@ -297,18 +309,28 @@ class HumanTrainer(BaseTrainer):
                 new_state = self.runtime.step(state, ctrl_out.action)
 
                 # per-op window/cum
-                op_idx_np = ctrl_out.action.op_indices.detach().cpu().numpy()
+                executed = ~state.stopped & ~ctrl_out.action.is_stop
+                op_idx_np = ctrl_out.action.op_indices[executed].detach().cpu().numpy()
+                if t == 0:
+                    routing = self._routing_stats(ctrl_out.pdf)
                 counts = np.bincount(op_idx_np, minlength=n_ops)
                 op_pick_cum += counts
                 op_pick_window += counts
 
+                # Count the support AFTER structural + minimum-STOP masking.
+                entropy_max = ctrl_out.pdf.detach().gt(0).sum(dim=1, keepdim=True).clamp_min(1).float().log()
+                self._accumulate_entropy(win, ctrl_out, state, T)
+                reward_kwargs = (
+                    dict(physical_params=ctrl_out.action.params,
+                         param_op_indices=ctrl_out.action.op_indices)
+                    if self.reward_mode == 'stepwise' else dict(entropy_max=entropy_max)
+                )
                 r, breakdown, q_parts = self.reward_fn.compute(
                     image_initial=imgs, target=targets,
                     state_before=state, action=ctrl_out.action, state_after=new_state,
                     entropy=ctrl_out.entropy, progress=progress, q_initial=q_initial,
                     q_before=q_before,
-                    physical_params=ctrl_out.action.params,
-                    param_op_indices=ctrl_out.action.op_indices,
+                    **reward_kwargs,
                 )
                 reward_totals.append(r.mean().detach())
                 if q_parts:
@@ -319,7 +341,8 @@ class HumanTrainer(BaseTrainer):
 
                 # V2-AI (A+C): accumulate reward-breakdown + policy stats.
                 self._accumulate_window(win, breakdown, ctrl_out.entropy, ctrl_out,
-                                        new_state, n_ops, T)
+                                        new_state, n_ops, T,
+                                        policy_active=~state.stopped & (state.step < T - 1))
 
                 if use_ppo:
                     # PPO branch: collect trajectory for K-epoch policy/value
@@ -330,9 +353,15 @@ class HumanTrainer(BaseTrainer):
                     # 图像可微项同为 task_delta − overflow（stepwise 的
                     # overflow 字段承载的是 invalid_penalty）。
                     alive_mask = (~state.stopped).float().unsqueeze(-1)
-                    param_loss_terms.append(
-                        -((breakdown.task_delta - breakdown.overflow_penalty) * alive_mask).mean()
-                    )
+                    if full_quality_params:
+                        # Dense deltas telescope to Q(final)-Q(front). Compute
+                        # that quality gradient once below, retaining one LPIPS
+                        # graph instead of one for every rollout step.
+                        param_loss_terms.append((breakdown.overflow_penalty * alive_mask).mean())
+                    else:
+                        param_loss_terms.append(
+                            -((breakdown.task_delta - breakdown.overflow_penalty) * alive_mask).mean()
+                        )
                     buf.push(state=state, action=ctrl_out.action,
                              log_prob=ctrl_out.log_prob, value=ctrl_out.value,
                              entropy=ctrl_out.entropy, reward=r)
@@ -368,6 +397,10 @@ class HumanTrainer(BaseTrainer):
                     total_param_loss = torch.stack(param_loss_terms).sum()
                 else:
                     total_param_loss = torch.zeros((), device=self.device)
+                if full_quality_params:
+                    total_param_loss = total_param_loss + self._parameter_quality_loss(
+                        state.image, targets, q_initial,
+                    )
                 # optim.zero_grad() already called before rollout; backward
                 # here fills gradients only on param_features + param_heads
                 # (verified — image path is independent of select_head/value_net).
@@ -439,6 +472,10 @@ class HumanTrainer(BaseTrainer):
                     self.writer.add_scalar('quality/ssim_final', q_final_parts['ssim'].mean().item(), global_step=it)
                     self.writer.add_scalar('quality/lpips_final', q_final_parts['lpips'].mean().item(), global_step=it)
                     self.writer.add_scalar('quality/lab_ab_final', q_final_parts['lab_ab'].mean().item(), global_step=it)
+                    for name, term in self._q_terms(q_final_parts).items():
+                        self.writer.add_scalar(f'q_terms/{name}', term.mean().item(), global_step=it)
+                    for name, value in routing.items():
+                        self.writer.add_scalar(f'routing/{name}', value, global_step=it)
                     total_picks = float(op_pick_cum.sum()) or 1.0
                     for i, name in enumerate(self.cfg.operators):
                         self.writer.add_scalar(f'op_pick_share/{name}',
@@ -501,14 +538,20 @@ class HumanTrainer(BaseTrainer):
                 # per-rollout statistics over the window. avg_len 的分母是
                 # 可达上限 T-1：rollout 最后一步恒为强制 STOP（不执行算子）。
                 wn = max(1, win['n_steps'])
-                pol_ent = win['pol_ent'] / wn
+                en = max(1, win['entropy_count'])
+                pol_ent = win['entropy_sum'] / en
+                pol_ent_max = win['entropy_max_sum'] / en
+                pol_ent_norm = win['entropy_norm_sum'] / en
                 stop_pct = (100.0 * win['n_stop'] / max(1, win['argmax_seen']))
                 avg_len = win['len_sum'] / max(1, win['n_samples'])
                 len_cap = max(T - 1, 1)
                 print(f"policy   loss={mloss_agent:.4f}  value={mloss_value:.4f}    "
-                    f"entropy={pol_ent:.3f}/{log_n_ops_plus1:.3f}  "
+                    f"entropy={pol_ent:.3f}/{pol_ent_max:.3f}  norm={pol_ent_norm:.3f}  "
                     f"stop={stop_pct:.0f}%  avg_len={avg_len:.1f}/{len_cap}"
                 )
+                self._log_to_file(f"         routing(first step): input_JS={routing['input_js']:.3e} "
+                      f"unique_argmax={routing['unique_argmax']}/{imgs.shape[0]} "
+                      f"dominant={100 * routing['dominant_share']:.0f}%")
                 # if self._param_reg['enabled'] and use_ppo:
                 #     print(f"         param_reg λ={self.reward_fn.lambda_param:.2e}"
                 #           f"  d²mean={win['param_pen'] / wn:.4f}")
@@ -525,21 +568,15 @@ class HumanTrainer(BaseTrainer):
                           f"clipfrac={ppo_stats['clip_frac']:.2f}  "
                           f"n_mb={ppo_stats['n_mbs']}")
 
-                # quality — instantaneous batch means of the CURRENT iter:
-                # Front ISP output (I_0) → AdaptiveISP final (I_T). Δ shows
-                # whether the Controller improved or damaged its input.
+                # quality — Q and its signed, weighted contributions, batch
+                # means for Front ISP (I_0) → AdaptiveISP (I_T).
                 q0 = q_initial.mean().item()
                 qT = q_final.mean().item()
-                s0 = m0['ssim'].mean().item()
-                sT = q_final_parts['ssim'].mean().item()
-                l0 = m0['lpips'].mean().item()
-                lT = q_final_parts['lpips'].mean().item()
-                ab0 = m0['lab_ab'].mean().item()
-                abT = q_final_parts['lab_ab'].mean().item()
-                print(f"quality  Q       {q0:.4f} → {qT:.4f}   Δ={qT - q0:+.4f}")
-                print(f"         SSIM    {s0:.4f} → {sT:.4f}   Δ={sT - s0:+.4f}")
-                print(f"         LPIPS   {l0:.4f} → {lT:.4f}   Δ={lT - l0:+.4f}")
-                print(f"         Lab_ab  {ab0:.4f} → {abT:.4f}   Δ={abT - ab0:+.4f}")
+                print(f"quality  Q       {q0:+.4f} → {qT:+.4f}   Δ={qT - q0:+.4f}")
+                terms0, termsT = self._q_terms(m0), self._q_terms(q_final_parts)
+                for name, label in (('ssim', 'SSIM'), ('lpips', 'LPIPS'), ('lab_ab', 'Lab_ab')):
+                    v0, vT = terms0[name].mean().item(), termsT[name].mean().item()
+                    print(f"         {label:7s} {v0:+.4f} → {vT:+.4f}   Δ={vT - v0:+.4f}")
 
                 # rollout — three eval-argmax shadow rollouts: canary (fixed
                 # image drawn at init) shows policy evolution on the same
@@ -603,30 +640,104 @@ class HumanTrainer(BaseTrainer):
             logger.warning(f"final_val.json dump failed: {exc!r}")
         torch.cuda.empty_cache()
 
+    def _log_to_file(self, message: str) -> None:
+        """Save diagnostics without echoing them to the console."""
+        tee = getattr(self, 'tee', None)
+        if tee is not None:
+            tee.write_to_file(message + "\n")
+            tee.flush()
+
+    @staticmethod
+    def _routing_stats(pdf):
+        """Input dependence at a common state (first step, identical masks).
+
+        H(mean policy)-mean H(policy) is zero for identical distributions,
+        even when each has high entropy. Diagnostic only, never a reward.
+        """
+        p = pdf.detach().double()
+        mean_p = p.mean(dim=0)
+        h_mean = -(mean_p * mean_p.clamp_min(1e-30).log()).sum()
+        mean_h = -(p * p.clamp_min(1e-30).log()).sum(dim=1).mean()
+        _, counts = p.argmax(dim=1).unique(return_counts=True)
+        return {
+            'input_js': (h_mean - mean_h).clamp_min(0).item(),
+            'unique_argmax': counts.numel(),
+            'dominant_share': counts.max().item() / p.shape[0],
+        }
+
+    def _parameter_quality_loss(self, final_image, targets, q_initial):
+        """Same Q and scale as reward, with gradients from all three terms.
+
+        All final samples participate, including ones that learned STOP early.
+        PPO still receives the original dense rewards; only the deterministic
+        operator-parameter objective gets the previously missing LPIPS gradient.
+        """
+        from tasks.human_quality.metrics import quality_score
+        q_final, _ = quality_score(
+            final_image, targets,
+            lambda_ssim=self.task_model.lambda_ssim,
+            lambda_lpips=self.task_model.lambda_lpips,
+            lambda_lab_ab=self.task_model.lambda_lab_ab,
+            lpips_net=self.task_model.lpips_net,
+            lpips_grad=True,
+        )
+        return -self.reward_fn.alpha * (q_final - q_initial.detach()).mean()
+
+    @staticmethod
+    def _accumulate_entropy(win, ctrl_out, state, max_steps):
+        # Alive sample-step weighting; padding and forced terminal steps do
+        # not represent policy decisions. K<=1 has H=Hmax=Hnorm=0.
+        active = ~state.stopped & (state.step < max_steps - 1)
+        ent = ctrl_out.entropy.detach().reshape(-1)[active]
+        count = ctrl_out.pdf.detach().gt(0).sum(dim=1)[active]
+        ent_max = count.clamp_min(1).float().log()
+        ent_norm = torch.where(ent_max > 0, ent / ent_max.clamp_min(1e-12), 0.0)
+        win['entropy_sum'] += ent.sum().item()
+        win['entropy_max_sum'] += ent_max.sum().item()
+        win['entropy_norm_sum'] += ent_norm.sum().item()
+        win['entropy_count'] += int(active.sum().item())
+
+    def _q_terms(self, metrics) -> dict:
+        """Signed, weighted terms using the same weights as task/reward Q."""
+        return {
+            'ssim': self.task_model.lambda_ssim * metrics['ssim'],
+            'lpips': -self.task_model.lambda_lpips * metrics['lpips'],
+            'lab_ab': -self.task_model.lambda_lab_ab * metrics['lab_ab'],
+        }
+
     def _run_val(self, step: int) -> dict:
         """Run eval-argmax rollout on the val split; log mean quality + length.
 
         Called at end of training. `step` is used as the global_step tag for
         TensorBoard. Returns the metrics dict for the caller's log/summary use.
         """
+        was_training = self.controller.training
         self.controller.eval()
         # 参数恒为完整范围（旧 range_scale 机制已移除，无需切换）。
         T = int(self.cfg.test_steps)
         from tasks.human_quality import psnr_batch, delta_e_batch
-        ssim_sum, lpips_sum, lab_ab_sum, q_sum, len_sum, stop_count, n = 0.0, 0.0, 0.0, 0.0, 0, 0, 0
-        psnr_sum, de_sum = 0.0, 0.0
+        keys = ('ssim', 'lpips', 'lab_ab', 'psnr', 'delta_e', 'quality')
+        sums = {branch: dict.fromkeys(keys, 0.0) for branch in ('front', 'adaptive', 'delta')}
+        len_sum = stop_count = n = improved = degraded = 0
+        first_pdfs = []
         with torch.no_grad():
             for imgs_v, targets_v, cam_v in self.val_loader:
                 imgs_v = imgs_v.to(self.device, non_blocking=True).float()
                 targets_v = targets_v.to(self.device, non_blocking=True).float()
                 cam_v = cam_v.to(self.device)
                 imgs_v = self.front_isp(imgs_v, {'camera_id': cam_v}).clamp(0.0, 1.0)
+                m_front = self.task_model.compute_metrics(imgs_v, targets_v)
+                front = {k: m_front[k] for k in ('ssim', 'lpips', 'lab_ab', 'quality')}
+                front['psnr'] = psnr_batch(imgs_v, targets_v)
+                front['delta_e'] = delta_e_batch(imgs_v, targets_v)
                 state = self.runtime.initial_state(imgs_v)
                 lengths = torch.zeros(imgs_v.shape[0], dtype=torch.long, device=self.device)
                 stopped_learned = torch.zeros(imgs_v.shape[0], dtype=torch.bool, device=self.device)
                 for t in range(T):
                     c = self.search_space.valid_actions(state)
                     o = self.controller.act(state, c)
+                    if t == 0:
+                        first_pdfs.append(o.pdf.detach().cpu())
                     # A sample "learn-STOP-ed" if action.is_stop AND not-time-limit
                     step_before = state.step
                     is_time_limit = (step_before >= (T - 1))
@@ -637,47 +748,60 @@ class HumanTrainer(BaseTrainer):
                     if state.stopped.all():
                         break
                 m_v = self.task_model.compute_metrics(state.image, targets_v)
-                q_final = m_v['quality']
-                parts = {'ssim': m_v['ssim'], 'lpips': m_v['lpips'], 'lab_ab': m_v['lab_ab']}
+                adaptive = {k: m_v[k] for k in ('ssim', 'lpips', 'lab_ab', 'quality')}
+                adaptive['psnr'] = psnr_batch(state.image, targets_v)
+                adaptive['delta_e'] = delta_e_batch(state.image, targets_v)
+                delta = {k: adaptive[k] - front[k] for k in keys}
+                for branch, values in (('front', front), ('adaptive', adaptive), ('delta', delta)):
+                    for k in keys:
+                        sums[branch][k] += values[k].sum().item()
+                improved += int((delta['quality'] > 0).sum().item())
+                degraded += int((delta['quality'] < 0).sum().item())
                 b = imgs_v.shape[0]
-                ssim_sum += parts['ssim'].sum().item()
-                lpips_sum += parts['lpips'].sum().item()
-                lab_ab_sum += parts['lab_ab'].sum().item()
-                q_sum += q_final.sum().item()
-                psnr_sum += psnr_batch(state.image, targets_v).sum().item()
-                de_sum += delta_e_batch(state.image, targets_v).sum().item()
                 len_sum += int(lengths.sum().item())
                 stop_count += int(stopped_learned.sum().item())
                 n += b
-        self.controller.train()
+        self.controller.train(was_training)
 
-        metrics = {
-            'val/ssim': ssim_sum / max(n, 1),
-            'val/lpips': lpips_sum / max(n, 1),
-            'val/lab_ab': lab_ab_sum / max(n, 1),
-            'val/quality': q_sum / max(n, 1),
-            'val/psnr': psnr_sum / max(n, 1),
-            'val/delta_e': de_sum / max(n, 1),
+        metrics = {f'val/{k}': sums['adaptive'][k] / max(n, 1) for k in keys}
+        metrics.update({f'val/front/{k}': sums['front'][k] / max(n, 1) for k in keys})
+        metrics.update({f'val/delta/{k}': sums['delta'][k] / max(n, 1) for k in keys})
+        metrics.update({
             'val/mean_length': len_sum / max(n, 1),
             'val/pct_learned_stop': stop_count / max(n, 1),
             'val/n_samples': n,
-        }
+            'val/improved_q': improved,
+            'val/degraded_q': degraded,
+            'val/unchanged_q': n - improved - degraded,
+            'val/pct_improved_q': improved / max(n, 1),
+            'val/pct_degraded_q': degraded / max(n, 1),
+        })
+        if first_pdfs:
+            metrics.update({f'val/routing/{k}': v for k, v in
+                            self._routing_stats(torch.cat(first_pdfs)).items()})
         try:
             for k, v in metrics.items():
                 if isinstance(v, (int, float)):
                     self.writer.add_scalar(k, v, global_step=step)
         except Exception:
             pass
-        print("\n===== VAL (end of training) =====")
-        print(f"  samples: {metrics['val/n_samples']}")
-        print(f"  SSIM:  {metrics['val/ssim']:.4f}")
-        print(f"  LPIPS: {metrics['val/lpips']:.4f}")
-        print(f"  Lab_ab: {metrics['val/lab_ab']:.4f}")
-        print(f"  PSNR:  {metrics['val/psnr']:.2f} dB   ΔE76: {metrics['val/delta_e']:.2f}")
-        print(f"  Q:     {metrics['val/quality']:+.4f}")
-        print(f"  mean rollout length: {metrics['val/mean_length']:.2f}/{max(T - 1, 1)}")
-        print(f"  pct learned-STOP (before time-limit): {100 * metrics['val/pct_learned_stop']:.1f}%")
-        print("=================================\n")
+        print("\n===== VAL =====")
+        print(f"{'':14s} {'Front only':>14s} {'+AdaptiveISP':>14s} {'Δ':>12s}")
+        for label, k in zip(('SSIM', 'LPIPS', 'Lab_ab', 'PSNR', 'DeltaE76', 'Q'), keys):
+            print(f"{label:14s} {metrics[f'val/front/{k}']:14.4f} "
+                  f"{metrics[f'val/{k}']:14.4f} {metrics[f'val/delta/{k}']:+12.4f}")
+        print(f"AdaptiveISP improved Q: {improved}/{n} ({100 * improved / max(n, 1):.1f}%)")
+        print(f"AdaptiveISP degraded Q: {degraded}/{n} ({100 * degraded / max(n, 1):.1f}%)")
+        print(f"AdaptiveISP unchanged Q: {n - improved - degraded}/{n}")
+        for label, k in (('Q', 'quality'), ('SSIM', 'ssim'), ('LPIPS', 'lpips'), ('Lab_ab', 'lab_ab')):
+            print(f"mean Δ{label}: {metrics[f'val/delta/{k}']:+.4f}")
+        print(f"mean rollout length: {metrics['val/mean_length']:.2f}/{max(T - 1, 1)}")
+        print(f"learned STOP: {stop_count}/{n} ({100 * metrics['val/pct_learned_stop']:.1f}%)")
+        if first_pdfs:
+            self._log_to_file(f"routing (first step): input_JS={metrics['val/routing/input_js']:.3e} "
+                  f"unique_argmax={metrics['val/routing/unique_argmax']} "
+                  f"dominant={100 * metrics['val/routing/dominant_share']:.1f}%")
+        print("===================\n")
         return metrics
 
 

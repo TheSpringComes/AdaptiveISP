@@ -27,6 +27,7 @@ from isp.curriculum import scale_params
 from pipeline.action import ISPAction
 from pipeline.state import PipelineState
 from search.constraint import ConstraintResult
+from search.space import SearchSpace
 
 
 class AdaptiveISPController(Controller):
@@ -44,6 +45,7 @@ class AdaptiveISPController(Controller):
         exploration: float = 0.05,
         max_steps: int = 5,
         min_rollout_length: int = 1,
+        deterministic_features: bool = False,
     ) -> None:
         super().__init__()
         missing = [n for n in canonical_order if n not in operators]
@@ -92,6 +94,19 @@ class AdaptiveISPController(Controller):
         # step 0". Raise to 3 in E3 configs so PPO can't short-circuit to
         # a 1-step rollout early in training.
         self.min_rollout_length = int(min_rollout_length)
+        self.deterministic_features = bool(deterministic_features)
+        self.train(self.training)
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        if mode and self.deterministic_features:
+            # eval() freezes BN running statistics and disables Dropout, but
+            # retains gradients for conv/BN affine/head parameters. Sampling
+            # still follows self.training, independently of feature mode.
+            self.param_features.eval()
+            self.select_features.eval()
+            self.value_net.eval()
+        return self
 
     def _build_obs(self, state: PipelineState) -> torch.Tensor:
         img = self.down_sample(state.image)
@@ -122,13 +137,10 @@ class AdaptiveISPController(Controller):
         pdf = F.softmax(logits, dim=1) + 1e-37
         pdf = pdf * (1.0 - self.exploration) + self.exploration / n_actions
 
-        # Extend the op-mask with a STOP column. STOP is forbidden while
-        # state.step < self.min_rollout_length (>=1) — otherwise the trivial
-        # all-STOP policy is a shallow local optimum that PPO gladly finds.
-        stop_col_ok = (state.step >= self.min_rollout_length).float().unsqueeze(-1)      # (B, 1)
-        extended_mask = torch.cat(
-            [constraint.op_mask.float(), stop_col_ok], dim=1,
-        )                                                          # [B, n_ops + 1]
+        extended_mask = SearchSpace.policy_mask(
+            state, constraint, min_rollout_length=self.min_rollout_length,
+            max_steps=self.max_steps,
+        )
         pdf = pdf * extended_mask
         pdf = pdf / (pdf.sum(dim=1, keepdim=True) + 1e-30)
         entropy = (-pdf * torch.log(pdf + 1e-10)).sum(dim=1, keepdim=True)
@@ -213,9 +225,9 @@ class AdaptiveISPController(Controller):
         pdf = F.softmax(logits, dim=1) + 1e-37
         pdf = pdf * (1.0 - self.exploration) + self.exploration / n_actions
 
-        stop_col_ok = (state.step >= self.min_rollout_length).float().unsqueeze(-1)
-        extended_mask = torch.cat(
-            [constraint.op_mask.float(), stop_col_ok], dim=1,
+        extended_mask = SearchSpace.policy_mask(
+            state, constraint, min_rollout_length=self.min_rollout_length,
+            max_steps=self.max_steps,
         )
         pdf = pdf * extended_mask
         pdf = pdf / (pdf.sum(dim=1, keepdim=True) + 1e-30)

@@ -117,7 +117,7 @@ param_regularization:
 # 时被消费。
 reward_mode: stepwise
 quality_scale: 5.0                 # α：逐步 ΔQ 的缩放
-stop_bonus_beta: 1.0               # β：stop 奖励 = β·max(Q_t − Q_0, 0)
+stop_bonus_beta: 0.0               # 默认关闭；ablation 可设 β>0：β·max(Q_t − Q_0, 0)
 usage_penalty: 0.01               # 重复使用守卫 2^k × 此值（远小于典型 ΔQ 0.02–0.08）
 invalid_penalty: 0.1               # 溢出线性罚系数（untrained CCM 溢出≈0.6 → 罚 0.06 < ΔQ）；NaN 恒罚 1.0
 # ---- terminal 模式专用（stepwise 下忽略）----

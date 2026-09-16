@@ -19,7 +19,8 @@ StepwiseHumanReward (dense, 2026-09-13 redesign):
   - No big terminal task reward — ΔQ is credited where it happens, so the
     total already telescopes to α·[Q(I_T) − Q(I_0)]; adding a terminal term
     would double-count and re-inflate the value scale.
-  - STOP is no longer a flat bonus/penalty: stopping pays in proportion to
+  - STOP bonus is disabled by default (β=0); opt-in ablation only.
+    When enabled, STOP is not a flat bonus/penalty: stopping pays in proportion to
     the improvement over the Front-ISP baseline. Stop when nothing has
     improved → no payoff; stop after real gains → positive payoff. This is
     the "见好就收" shaping that keeps STOP from dominating at step 1.
@@ -36,7 +37,6 @@ StepwiseHumanReward (dense, 2026-09-13 redesign):
 """
 from __future__ import annotations
 
-import math
 from typing import Optional
 
 import torch
@@ -105,6 +105,7 @@ class HumanReward(Reward):
         state_after: PipelineState,
         *,
         entropy: Optional[torch.Tensor] = None,
+        entropy_max: Optional[torch.Tensor] = None,
         progress: float = 0.0,
         q_initial: Optional[torch.Tensor] = None,
         q_before: Optional[torch.Tensor] = None,
@@ -160,15 +161,18 @@ class HumanReward(Reward):
             torch.clip(image_after - 1.0, min=0.0) ** 2, dim=(1, 2, 3),
         ).unsqueeze(-1)
 
-        # 3. Entropy penalty (unchanged from Detection reward)
+        # 3. Entropy gap over the actual masked categorical support.
         if entropy is None:
             entropy_penalty = torch.zeros((B, 1), device=device)
         else:
             entropy = entropy if entropy.dim() == 2 else entropy.unsqueeze(-1)
+            if entropy_max is None:
+                raise ValueError("HumanReward requires masked entropy_max when entropy is supplied")
+            entropy_max = entropy_max.reshape(B, 1)
             entropy_penalty = (
                 (1.0 - float(progress))
                 * self.exploration_penalty
-                * (math.log(self.n_ops) - entropy)
+                * (entropy_max - entropy).clamp_min(0.0)
             )
 
         # 4. Usage penalty — exponential in prior op-count (2^prev_count × base).
@@ -241,7 +245,7 @@ class StepwiseHumanReward(Reward):
         lpips_net: str = "alex",
         lambda_lab_ab: float = 0.0,
         quality_scale: float = 1.0,            # α
-        stop_bonus_beta: float = 1.0,          # β
+        stop_bonus_beta: float = 0.0,          # β
         usage_penalty: float = 0.002,          # base × 2^k guard
         runtime_penalty_enabled: bool = False,
         runtime_penalty_lambda: float = 0.0005,
@@ -333,7 +337,8 @@ class StepwiseHumanReward(Reward):
         # 2. Progress-gated STOP reward: β · max(Q(I_t) − Q(I_0), 0).
         #    Fires only on the step where the policy submits STOP (learned
         #    stop; time-limit stop gets nothing — no bonus for being forced).
-        learned_stop = (action.is_stop & ~state_before.stopped).float().unsqueeze(-1)
+        learned_stop = (action.is_stop & ~state_before.stopped
+                        & (state_before.step < self.max_steps - 1)).float().unsqueeze(-1)
         global_gain = torch.clamp(torch.nan_to_num(
             q_after - q_initial, nan=0.0, posinf=0.0, neginf=0.0), min=0.0)
         stop_reward = self.beta * learned_stop * global_gain

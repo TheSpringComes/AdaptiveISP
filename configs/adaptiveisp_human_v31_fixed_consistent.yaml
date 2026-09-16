@@ -1,0 +1,12 @@
+# V3.1 fixed-front controlled experiment: retain the existing Q/weights,
+# architecture, minimum rollout and structural priors.
+base: configs/adaptiveisp_human_v31_fixed.yaml
+
+# Deterministic feature forwards during rollout + PPO recomputation + eval.
+# Action sampling remains stochastic during training. BN affine parameters
+# still learn; running statistics stay fixed and Dropout is disabled.
+deterministic_features: true
+
+# Train operator parameters on the same final Q (including LPIPS gradients).
+# One LPIPS autograd graph per rollout, not one per step. PPO is unchanged.
+full_quality_param_loss: true

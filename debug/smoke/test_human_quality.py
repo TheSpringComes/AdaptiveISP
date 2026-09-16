@@ -92,6 +92,7 @@ def test_human_quality_smoke() -> None:
             image_initial=imgs, target=targets,
             state_before=state, action=out.action, state_after=new_state,
             entropy=out.entropy, progress=t / T, q_initial=q0,
+            entropy_max=out.pdf.detach().gt(0).sum(dim=1).clamp_min(1).float().log(),
         )
         r_task_deltas.append(bd.task_delta.mean().item())
 
