@@ -63,6 +63,7 @@ class HumanReward(Reward):
         lambda_ssim: float = 1.0,
         lambda_lpips: float = 1.0,
         lpips_net: str = "alex",
+        lambda_lab_ab: float = 0.0,
         critic_logit_multiplier: float = 100.0,
         all_reward: float = 1.0,
         filter_usage_penalty: float = 1.0,
@@ -77,6 +78,7 @@ class HumanReward(Reward):
         self.max_steps = int(max_steps)
         self.lambda_ssim = float(lambda_ssim)
         self.lambda_lpips = float(lambda_lpips)
+        self.lambda_lab_ab = float(lambda_lab_ab)
         self.lpips_net = lpips_net
         self.critic_logit_multiplier = float(critic_logit_multiplier)
         self.all_reward = float(all_reward)
@@ -138,12 +140,14 @@ class HumanReward(Reward):
                     lambda_ssim=self.lambda_ssim,
                     lambda_lpips=self.lambda_lpips,
                     lpips_net=self.lpips_net,
+                    lambda_lab_ab=self.lambda_lab_ab,
                 )
             q_after, q_parts = quality_score(
                 state_after.image, target,
                 lambda_ssim=self.lambda_ssim,
                 lambda_lpips=self.lambda_lpips,
                 lpips_net=self.lpips_net,
+                lambda_lab_ab=self.lambda_lab_ab,
             )
             r_terminal = (q_after - q_initial) * self.critic_logit_multiplier
             task_delta = is_terminal * r_terminal
@@ -235,6 +239,7 @@ class StepwiseHumanReward(Reward):
         lambda_ssim: float = 1.0,
         lambda_lpips: float = 1.0,
         lpips_net: str = "alex",
+        lambda_lab_ab: float = 0.0,
         quality_scale: float = 1.0,            # α
         stop_bonus_beta: float = 1.0,          # β
         usage_penalty: float = 0.002,          # base × 2^k guard
@@ -247,6 +252,7 @@ class StepwiseHumanReward(Reward):
         self.max_steps = int(max_steps)
         self.lambda_ssim = float(lambda_ssim)
         self.lambda_lpips = float(lambda_lpips)
+        self.lambda_lab_ab = float(lambda_lab_ab)
         self.lpips_net = lpips_net
         self.alpha = float(quality_scale)
         self.beta = float(stop_bonus_beta)
@@ -290,6 +296,7 @@ class StepwiseHumanReward(Reward):
                 lambda_ssim=self.lambda_ssim,
                 lambda_lpips=self.lambda_lpips,
                 lpips_net=self.lpips_net,
+                lambda_lab_ab=self.lambda_lab_ab,
             )
         if q_before is None:
             # Fallback (single-step semantics): before-image == baseline.
@@ -301,6 +308,7 @@ class StepwiseHumanReward(Reward):
             lambda_ssim=self.lambda_ssim,
             lambda_lpips=self.lambda_lpips,
             lpips_net=self.lpips_net,
+            lambda_lab_ab=self.lambda_lab_ab,
         )
         # Already-stopped samples: image is frozen by the executor, so
         # ΔQ_t = 0 naturally — but the executor may emit clamped/unchanged

@@ -97,12 +97,20 @@ _DELTA = 6.0 / 29.0
 
 
 def _srgb_to_lab(x: torch.Tensor) -> torch.Tensor:
-    """(B, 3, H, W) sRGB in [0,1] → CIELAB。线性化 + XYZ + f(t) 投影。"""
+    """(B, 3, H, W) sRGB in [0,1] → CIELAB。线性化 + XYZ + f(t) 投影。
+
+    注意 `torch.where` 反向会同时评估两条分支的梯度：`xyz^(1/3)` 在 xyz→0
+    处梯度 (1/3)·xyz^(-2/3) 发散为 Inf——即使前向未选中该分支，Inf 也会通过
+    `torch.where` 的未走分支污染上游图（黑像素 → clip_grad_norm → NaN 权重）。
+    把幂分支的 base 用 `clamp(min=_DELTA**3)` 从下方挡住，未选中分支上的梯度
+    对未取路径的样本恒为 0（clamp 反向），对取路径的样本正是正确的解析值。
+    """
     lin = torch.where(x <= 0.04045, x / 12.92, ((x.clamp(min=0.0) + 0.055) / 1.055) ** 2.4)
     m = _SRGB_TO_XYZ.to(x.device, x.dtype)
     flat = lin.permute(0, 2, 3, 1) @ m.T
     xyz = flat / _XYZ_WHITE.to(x.device, x.dtype)
-    f = torch.where(xyz > _DELTA ** 3, xyz.clamp(min=0.0) ** (1.0 / 3.0),
+    xyz_safe = xyz.clamp(min=_DELTA ** 3)
+    f = torch.where(xyz > _DELTA ** 3, xyz_safe ** (1.0 / 3.0),
                     xyz / (3 * _DELTA ** 2) + 4.0 / 29.0)
     return torch.cat([116 * f[..., 1:2] - 16,
                       500 * (f[..., 0:1] - f[..., 1:2]),
@@ -115,24 +123,40 @@ def delta_e_batch(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     return d.norm(dim=-1).flatten(1).mean(dim=1, keepdim=True)
 
 
+def lab_ab_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """CIELAB a*/b* chroma L1 per sample: mean(|Δa| + |Δb|).
+
+    Inputs are sRGB tensors `(B,3,H,W)` in `[0,1]`. The L* channel is
+    intentionally excluded so this term focuses on absolute chroma mismatch,
+    while SSIM/LPIPS keep handling structure / perceptual features.
+    Returns `(B,1)`, lower is better.
+    """
+    lab_p = _srgb_to_lab(pred.clamp(0.0, 1.0))
+    lab_t = _srgb_to_lab(target.clamp(0.0, 1.0))
+    d = (lab_p[..., 1:] - lab_t[..., 1:]).abs()
+    return d.sum(dim=-1).flatten(1).mean(dim=1, keepdim=True)
+
+
 def quality_score(
     pred: torch.Tensor,
     target: torch.Tensor,
     lambda_ssim: float = 1.0,
     lambda_lpips: float = 1.0,
     lpips_net: str = "alex",
+    lambda_lab_ab: float = 0.0,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    """Composite Q(pred) = λ_ssim * SSIM - λ_lpips * LPIPS. Returns `(B, 1)`.
+    """Composite Q = λ_ssim·SSIM − λ_lpips·LPIPS − λ_ab·Lab_ab.
 
-    The second element is a dict of the raw component tensors, for logging.
-    Both raw values live in the same [0, 1]-ish neighborhood (LPIPS-alex on
-    natural images is typically 0.05 – 0.5), so the default lambda_ssim =
-    lambda_lpips = 1.0 gives them comparable pull. Tune from the config.
+    `lambda_lab_ab=0` is bit-compatible with the previous SSIM+LPIPS reward.
+    `parts["lab_ab"]` is returned regardless of the weight so logs can monitor
+    chroma drift while the term is disabled.
     """
     s = ssim_batch(pred, target)
     lp = lpips_batch(pred, target, net=lpips_net)
-    q = lambda_ssim * s - lambda_lpips * lp
-    return q, {"ssim": s, "lpips": lp, "quality": q}
+    lab_ab = lab_ab_loss(pred, target)
+    q = lambda_ssim * s - lambda_lpips * lp - lambda_lab_ab * lab_ab
+    return q, {"ssim": s, "lpips": lp, "lab_ab": lab_ab, "quality": q}
 
 
-__all__ = ["ssim_batch", "lpips_batch", "psnr_batch", "delta_e_batch", "quality_score"]
+__all__ = ["ssim_batch", "lpips_batch", "psnr_batch", "delta_e_batch",
+           "lab_ab_loss", "quality_score"]

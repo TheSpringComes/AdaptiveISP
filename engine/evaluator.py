@@ -351,6 +351,7 @@ def _evaluate_human(
         lambda_ssim=float(hq_cfg.get('lambda_ssim', 1.0)),
         lambda_lpips=float(hq_cfg.get('lambda_lpips', 1.0)),
         lpips_net=hq_cfg.get('lpips_net', 'alex'),
+        lambda_lab_ab=float(hq_cfg.get('lambda_lab_ab', 0.0)),
         device=device,
     )
 
@@ -382,7 +383,7 @@ def _evaluate_human(
         front_isp.load_state_dict(ckpt_dict['front_isp'])
 
     T = int(cfg.test_steps)
-    ssim_sum = lpips_sum = q_sum = 0.0
+    ssim_sum = lpips_sum = lab_ab_sum = q_sum = 0.0
     len_sum = stop_count = n = 0
     psnr_sum = de_sum = 0.0
     with torch.no_grad():
@@ -409,6 +410,7 @@ def _evaluate_human(
             b = imgs_v.shape[0]
             ssim_sum += m_v['ssim'].sum().item()
             lpips_sum += m_v['lpips'].sum().item()
+            lab_ab_sum += m_v['lab_ab'].sum().item()
             q_sum += m_v['quality'].sum().item()
             psnr_sum += psnr_batch(state.image, targets_v).sum().item()
             de_sum += delta_e_batch(state.image, targets_v).sum().item()
@@ -419,6 +421,7 @@ def _evaluate_human(
     metrics = {
         'val/ssim': ssim_sum / max(n, 1),
         'val/lpips': lpips_sum / max(n, 1),
+        'val/lab_ab': lab_ab_sum / max(n, 1),
         'val/quality': q_sum / max(n, 1),
         'val/psnr': psnr_sum / max(n, 1),
         'val/delta_e': de_sum / max(n, 1),
@@ -432,6 +435,7 @@ def _evaluate_human(
         f"  samples: {metrics['val/n_samples']}",
         f"  SSIM:  {metrics['val/ssim']:.4f}",
         f"  LPIPS: {metrics['val/lpips']:.4f}",
+        f"  Lab_ab: {metrics['val/lab_ab']:.4f}",
         f"  PSNR:  {metrics['val/psnr']:.2f} dB   ΔE76: {metrics['val/delta_e']:.2f}",
         f"  Q:     {metrics['val/quality']:+.4f}",
         # 分母为可达上限 T-1：最后一步恒为强制 STOP，不执行算子。

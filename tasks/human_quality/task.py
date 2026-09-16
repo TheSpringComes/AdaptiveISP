@@ -5,7 +5,8 @@ returns `TaskMetrics` with keys:
 
     - `ssim`      (B, 1)  higher is better
     - `lpips`     (B, 1)  lower is better
-    - `quality`   (B, 1)  Q(I) = λ_ssim · SSIM − λ_lpips · LPIPS
+    - `lab_ab`    (B, 1)  CIELAB chroma L1, lower is better
+    - `quality`   (B, 1)  Q(I) = λ_ssim·SSIM − λ_lpips·LPIPS − λ_ab·Lab_ab
 
 Unlike YOLOv3Detection, this task has no learnable parameters — LPIPS is a
 frozen pretrained AlexNet cached at first use.
@@ -23,8 +24,8 @@ from tasks.human_quality.metrics import quality_score
 class HumanQualityTask(Task):
     """Task that scores an image against a paired Expert-C reference.
 
-    lambda_ssim / lambda_lpips are the weights in
-      Q(I) = lambda_ssim · SSIM(I, ref) - lambda_lpips · LPIPS(I, ref)
+    lambda_ssim / lambda_lpips / lambda_lab_ab are the weights in
+      Q(I) = lambda_ssim·SSIM(I, ref) - lambda_lpips·LPIPS(I, ref) - lambda_lab_ab·Lab_ab(I, ref)
 
     lpips_net is the LPIPS backbone; "alex" is fastest and typical for
     training-time reward. Switch to "vgg" for eval if desired.
@@ -36,11 +37,13 @@ class HumanQualityTask(Task):
         lambda_ssim: float = 1.0,
         lambda_lpips: float = 1.0,
         lpips_net: str = "alex",
+        lambda_lab_ab: float = 0.0,
         device: torch.device = torch.device("cuda"),
     ) -> None:
         self.lambda_ssim = float(lambda_ssim)
         self.lambda_lpips = float(lambda_lpips)
         self.lpips_net = lpips_net
+        self.lambda_lab_ab = float(lambda_lab_ab)
         self.device = device
 
     def compute_metrics(
@@ -54,10 +57,12 @@ class HumanQualityTask(Task):
             lambda_ssim=self.lambda_ssim,
             lambda_lpips=self.lambda_lpips,
             lpips_net=self.lpips_net,
+            lambda_lab_ab=self.lambda_lab_ab,
         )
         return TaskMetrics(values={
             "ssim": parts["ssim"],
             "lpips": parts["lpips"],
+            "lab_ab": parts["lab_ab"],
             "quality": parts["quality"],
         })
 

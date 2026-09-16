@@ -60,6 +60,7 @@ class HumanTrainer(BaseTrainer):
             lambda_ssim=float(hq_cfg.get('lambda_ssim', 1.0)),
             lambda_lpips=float(hq_cfg.get('lambda_lpips', 1.0)),
             lpips_net=hq_cfg.get('lpips_net', 'alex'),
+            lambda_lab_ab=float(hq_cfg.get('lambda_lab_ab', 0.0)),
             device=self.device,
         )
 
@@ -118,6 +119,7 @@ class HumanTrainer(BaseTrainer):
                 lambda_ssim=self.task_model.lambda_ssim,
                 lambda_lpips=self.task_model.lambda_lpips,
                 lpips_net=self.task_model.lpips_net,
+                lambda_lab_ab=self.task_model.lambda_lab_ab,
                 quality_scale=float(cfg.get('quality_scale', 1.0)),          # α
                 stop_bonus_beta=float(cfg.get('stop_bonus_beta', 1.0)),      # β
                 usage_penalty=float(cfg.get('usage_penalty', 0.002)),
@@ -134,6 +136,7 @@ class HumanTrainer(BaseTrainer):
                 lambda_ssim=self.task_model.lambda_ssim,
                 lambda_lpips=self.task_model.lambda_lpips,
                 lpips_net=self.task_model.lpips_net,
+                lambda_lab_ab=self.task_model.lambda_lab_ab,
                 critic_logit_multiplier=cfg.critic_logit_multiplier,
                 all_reward=cfg.all_reward,
                 filter_usage_penalty=cfg.filter_usage_penalty,
@@ -398,7 +401,8 @@ class HumanTrainer(BaseTrainer):
             else:
                 m_T = self.task_model.compute_metrics(state.image, targets)
                 q_final = m_T['quality']
-                q_final_parts = {'ssim': m_T['ssim'], 'lpips': m_T['lpips'], 'quality': m_T['quality']}
+                q_final_parts = {'ssim': m_T['ssim'], 'lpips': m_T['lpips'],
+                                 'lab_ab': m_T['lab_ab'], 'quality': m_T['quality']}
             q_delta = (q_final - q_initial).mean().item()
             win['n_iters'] += 1
             # avg_len accumulation: `op_usage` only counts ops actually
@@ -424,6 +428,7 @@ class HumanTrainer(BaseTrainer):
                     self.writer.add_scalar('quality/q_delta', q_delta, global_step=it)
                     self.writer.add_scalar('quality/ssim_final', q_final_parts['ssim'].mean().item(), global_step=it)
                     self.writer.add_scalar('quality/lpips_final', q_final_parts['lpips'].mean().item(), global_step=it)
+                    self.writer.add_scalar('quality/lab_ab_final', q_final_parts['lab_ab'].mean().item(), global_step=it)
                     total_picks = float(op_pick_cum.sum()) or 1.0
                     for i, name in enumerate(self.cfg.operators):
                         self.writer.add_scalar(f'op_pick_share/{name}',
@@ -515,9 +520,12 @@ class HumanTrainer(BaseTrainer):
                 sT = q_final_parts['ssim'].mean().item()
                 l0 = m0['lpips'].mean().item()
                 lT = q_final_parts['lpips'].mean().item()
+                ab0 = m0['lab_ab'].mean().item()
+                abT = q_final_parts['lab_ab'].mean().item()
                 print(f"quality  Q       {q0:.4f} → {qT:.4f}   Δ={qT - q0:+.4f}")
                 print(f"         SSIM    {s0:.4f} → {sT:.4f}   Δ={sT - s0:+.4f}")
                 print(f"         LPIPS   {l0:.4f} → {lT:.4f}   Δ={lT - l0:+.4f}")
+                print(f"         Lab_ab  {ab0:.4f} → {abT:.4f}   Δ={abT - ab0:+.4f}")
 
                 # rollout — three eval-argmax shadow rollouts: canary (fixed
                 # image drawn at init) shows policy evolution on the same
@@ -594,7 +602,7 @@ class HumanTrainer(BaseTrainer):
         self.controller.range_scale = 1.0
         T = int(self.cfg.test_steps)
         from tasks.human_quality import psnr_batch, delta_e_batch
-        ssim_sum, lpips_sum, q_sum, len_sum, stop_count, n = 0.0, 0.0, 0.0, 0, 0, 0
+        ssim_sum, lpips_sum, lab_ab_sum, q_sum, len_sum, stop_count, n = 0.0, 0.0, 0.0, 0.0, 0, 0, 0
         psnr_sum, de_sum = 0.0, 0.0
         with torch.no_grad():
             for imgs_v, targets_v, cam_v in self.val_loader:
@@ -619,10 +627,11 @@ class HumanTrainer(BaseTrainer):
                         break
                 m_v = self.task_model.compute_metrics(state.image, targets_v)
                 q_final = m_v['quality']
-                parts = {'ssim': m_v['ssim'], 'lpips': m_v['lpips']}
+                parts = {'ssim': m_v['ssim'], 'lpips': m_v['lpips'], 'lab_ab': m_v['lab_ab']}
                 b = imgs_v.shape[0]
                 ssim_sum += parts['ssim'].sum().item()
                 lpips_sum += parts['lpips'].sum().item()
+                lab_ab_sum += parts['lab_ab'].sum().item()
                 q_sum += q_final.sum().item()
                 psnr_sum += psnr_batch(state.image, targets_v).sum().item()
                 de_sum += delta_e_batch(state.image, targets_v).sum().item()
@@ -634,6 +643,7 @@ class HumanTrainer(BaseTrainer):
         metrics = {
             'val/ssim': ssim_sum / max(n, 1),
             'val/lpips': lpips_sum / max(n, 1),
+            'val/lab_ab': lab_ab_sum / max(n, 1),
             'val/quality': q_sum / max(n, 1),
             'val/psnr': psnr_sum / max(n, 1),
             'val/delta_e': de_sum / max(n, 1),
@@ -651,6 +661,7 @@ class HumanTrainer(BaseTrainer):
         print(f"  samples: {metrics['val/n_samples']}")
         print(f"  SSIM:  {metrics['val/ssim']:.4f}")
         print(f"  LPIPS: {metrics['val/lpips']:.4f}")
+        print(f"  Lab_ab: {metrics['val/lab_ab']:.4f}")
         print(f"  PSNR:  {metrics['val/psnr']:.2f} dB   ΔE76: {metrics['val/delta_e']:.2f}")
         print(f"  Q:     {metrics['val/quality']:+.4f}")
         print(f"  mean rollout length: {metrics['val/mean_length']:.2f}/{max(T - 1, 1)}")

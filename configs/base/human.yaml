@@ -81,6 +81,9 @@ human_quality:
   val_list:    /home/jing/datasets/fivek/val_expert_c.txt
   lambda_ssim:  1.0
   lambda_lpips: 0.5
+  # Lab_ab 色度约束：Q -= lambda_lab_ab * mean(|Δa| + |Δb|)。
+  # 设为 0 可关闭；实测 fixed front 约 Lab_ab=7.5，0.02 → 约 0.15。
+  lambda_lab_ab: 0.02
   # lpips_net:    alex
   lpips_net:    vgg
 
@@ -90,15 +93,18 @@ print_freq: 100
 summary_freq: 100
 show_img_num: 5
 
-# ---------- Progressive Parameter Bounds（参数课程） ----------
-# 训练前期限制参数调整幅度，随进度放宽到完整范围（isp/curriculum.py）。
-# schedule: quadratic（先慢后快）; progress ≥ end_progress 后恒为完整范围。
-# 关闭（enabled: false）时与旧行为逐位一致；val/eval 恒用完整范围。
-parameter_curriculum:
-  enabled: true
-  start_scale: 0.2        # progress=0 时开放的参数范围比例
-  end_progress: 0.25       # 训练前 25% 期间渐开；之后恒 1.0
-  schedule: quadratic
+# ---------- Neutral-Distance Parameter Regularization（参数正则化） ----------
+# 取代旧 Progressive Bounds（范围压缩）。参数恒用完整合法范围；每步对实际
+# 执行参数相对 neutral 的归一化距离收二次惩罚，λ_p 随进度 cosine 衰减：
+#   0%──10%──保持 λ₀──30%──cosine 衰减到 0──之后恒 0（完全放开）
+# P_param = λ_p(ρ)·d_t²，d_t ∈ [0,1]（isp/param_reg.py）。
+# λ₀=0.001 量级：d=1（顶格）时罚 0.001 << 典型 ΔQ 0.02–0.08，只引导偏好。
+param_regularization:
+  enable: true
+  lambda0: 0.001
+  start_ratio: 0.10
+  end_ratio: 0.30
+  schedule: cosine
 
 # ---------- Reward / rollout ----------
 # Reward 模式：'stepwise'（默认，逐步稠密 ΔQ + progress-gated stop，见
