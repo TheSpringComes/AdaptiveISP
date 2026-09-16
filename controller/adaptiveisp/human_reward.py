@@ -314,14 +314,20 @@ class StepwiseHumanReward(Reward):
             # Fallback (single-step semantics): before-image == baseline.
             q_before = q_initial
 
-        # ---- per-step quality parts (one fresh SSIM+LPIPS forward) ----
-        q_after, q_parts = quality_score(
-            state_after.image, target,
-            lambda_ssim=self.lambda_ssim,
-            lambda_lpips=self.lambda_lpips,
-            lpips_net=self.lpips_net,
-            lambda_lab_ab=self.lambda_lab_ab,
-        )
+        # ---- per-step quality values (one fresh SSIM+LPIPS forward) ----
+        # The PPO parameter objective below is the single authoritative
+        # differentiable Q(final) path. Keeping an LPIPS graph for every
+        # intermediate rollout state multiplies memory by T and duplicates
+        # that objective. Reward values remain identical; the final Q loss
+        # still backpropagates SSIM, LPIPS, and Lab_ab together.
+        with torch.no_grad():
+            q_after, q_parts = quality_score(
+                state_after.image, target,
+                lambda_ssim=self.lambda_ssim,
+                lambda_lpips=self.lambda_lpips,
+                lpips_net=self.lpips_net,
+                lambda_lab_ab=self.lambda_lab_ab,
+            )
         # Already-stopped samples: image is frozen by the executor, so
         # ΔQ_t = 0 naturally — but the executor may emit clamped/unchanged
         # tensors; force exact zero to avoid float noise accumulating.
