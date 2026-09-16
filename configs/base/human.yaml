@@ -82,8 +82,8 @@ human_quality:
   lambda_ssim:  1.0
   lambda_lpips: 0.5
   # Lab_ab 色度约束：Q -= lambda_lab_ab * mean(|Δa| + |Δb|)。
-  # 设为 0 可关闭；实测 fixed front 约 Lab_ab=7.5，0.02 → 约 0.15。
-  lambda_lab_ab: 0.02
+  # 设为 0 可关闭；实测 fixed front 约 Lab_ab=7.5，if 0.1 → 约 0.75。
+  lambda_lab_ab: 0.1
   # lpips_net:    alex
   lpips_net:    vgg
 
