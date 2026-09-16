@@ -34,12 +34,13 @@ switches (both default off for existing configurations):
   head parameters still learn; action sampling remains stochastic. Existing
   checkpoint shapes are compatible. From scratch, BN starts with its default
   running statistics; convergence must be checked in the controlled run.
-- `full_quality_param_loss`: computes the parameter quality objective as
-  `-quality_scale * mean(Q(final)-Q(front))` with LPIPS input gradients enabled.
-  This is the telescoped dense quality objective, including early-stopped
-  samples. Existing per-step invalid/overflow guards remain. PPO still uses
-  the original dense reward values. Only one LPIPS gradient graph is retained
-  per rollout; this adds computation and memory compared with detached LPIPS.
+- Human Quality operator parameters always optimize the parameter quality
+  objective as `-quality_scale * mean(Q(final)-Q(front))` with LPIPS input
+  gradients enabled. This is the telescoped dense quality objective,
+  including early-stopped samples. Existing per-step invalid/overflow guards
+  remain. PPO still uses the original dense reward values. Only one LPIPS
+  gradient graph is retained per rollout; this adds computation and memory
+  compared with detached LPIPS.
 
 Routing diagnostics use first-step distributions, where inputs have the same
 history/mask: `input_JS = H(mean(pdf)) - mean(H(pdf))`, unique argmax count, and

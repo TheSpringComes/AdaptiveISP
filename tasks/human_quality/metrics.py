@@ -144,14 +144,15 @@ def quality_score(
     lambda_lpips: float = 1.0,
     lpips_net: str = "alex",
     lambda_lab_ab: float = 0.0,
-    lpips_grad: bool = False,
+    lpips_grad: bool = True,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Composite Q = λ_ssim·SSIM − λ_lpips·LPIPS − λ_ab·Lab_ab.
 
     `lambda_lab_ab=0` is bit-compatible with the previous SSIM+LPIPS reward.
     `parts["lab_ab"]` is returned regardless of the weight so logs can monitor
     chroma drift while the term is disabled.
-    `lpips_grad=True` keeps the frozen LPIPS input gradient for parameter training.
+    LPIPS input gradients are enabled by default so the Q objective is fully
+    differentiable. The LPIPS network weights remain frozen.
     """
     s = ssim_batch(pred, target)
     lp = lpips_batch(pred, target, net=lpips_net, grad=lpips_grad)

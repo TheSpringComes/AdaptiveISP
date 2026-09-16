@@ -175,7 +175,7 @@ class HumanTrainer(BaseTrainer):
             with open(os.path.join(self.base_dir, 'resolved_config.yaml'), 'w') as fh:
                 yaml.safe_dump(dict(cfg), fh, allow_unicode=True, sort_keys=False)
         print(f"policy deterministic_features={self.controller.deterministic_features} "
-              f"full_quality_param_loss={bool(cfg.get('full_quality_param_loss', False))}")
+              "full_quality_param_loss=always")
 
         # Fixed canary sample for the print block's `example / canary` rollout.
         # Same rationale as Detection: keeping the input constant across iters
@@ -238,9 +238,9 @@ class HumanTrainer(BaseTrainer):
                     f'Using {self.args.workers} dataloader workers | '
                     f'Logging results to {self.args.save_path}')
 
-        full_quality_params = bool(self.cfg.get('full_quality_param_loss', False))
-        if full_quality_params and (not use_ppo or self.reward_mode != 'stepwise'):
-            raise ValueError('full_quality_param_loss requires stepwise Human PPO training')
+        # Human Quality Q is always the parameter objective. LPIPS gradients
+        # are mandatory; this is no longer controlled by a config switch.
+        full_quality_params = bool(use_ppo and self.reward_mode == 'stepwise')
         n_ops = len(self.cfg.operators)
         T = int(self.cfg.test_steps)
         mloss_agent, mloss_value = 0.0, 0.0

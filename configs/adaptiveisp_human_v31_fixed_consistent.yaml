@@ -7,6 +7,5 @@ base: configs/adaptiveisp_human_v31_fixed.yaml
 # still learn; running statistics stay fixed and Dropout is disabled.
 deterministic_features: true
 
-# Train operator parameters on the same final Q (including LPIPS gradients).
-# One LPIPS autograd graph per rollout, not one per step. PPO is unchanged.
-full_quality_param_loss: true
+# Operator parameters always optimize the same final Q, including LPIPS
+# input gradients. This behavior is mandatory in Human Quality training.
