@@ -41,7 +41,7 @@ _NEUTRAL_NOTES: dict[str, tuple[str, str]] = {
     "exposure":        ("0（EV shift 线性空间）", "additive"),
     "gamma":           ("1（log 空间乘性）", "log-space"),
     "ccm":             ("3×3 identity（残差参数化）", "identity-matrix"),
-    "sharpen":         ("无 identity 点：factor 是 blur↔sharpen 混合（1=锐化，0=模糊）", "CHECK-manual"),
+    "sharpen":         ("1.0（factor=1=原图；0=模糊，2=强锐化）", "sharpen-residual"),
     "denoise":         ("0（strength=0 不去噪）", "blend-strength"),
     "tone":            ("均匀曲线（apply 内 sum 归一化 → 任意等值曲线=identity）", "identity-curve"),
     "contrast":        ("0", "additive"),
@@ -62,7 +62,7 @@ _NEUTRAL_NOTES: dict[str, tuple[str, str]] = {
     "inf_ldci":          ("0（strength=0）", "blend-strength"),
     "inf_unsharp":       ("0（amount=0）", "blend-strength"),
     "inf_nlm":           ("0（strength=0）", "blend-strength"),
-    "inf_ebf":           ("无 identity 点：参数是 bilateral 的 range-sigma 位置（α=0→σ=0.05 仍滤波）", "CHECK-manual"),
+    "inf_ebf":           ("0（identity-blend：α=0 直通，α 控制 σ 与混合）", "blend-strength"),
     "inf_saturation":    ("1.0（乘性增益恒等）", "log-space"),
 }
 

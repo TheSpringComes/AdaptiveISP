@@ -127,8 +127,15 @@ class HumanTrainer(BaseTrainer):
                 runtime_penalty_lambda=float(cfg.get('runtime_penalty_lambda', 0.0005)),
                 runtime_costs=cfg.filters_runtime,
                 invalid_penalty=float(cfg.get('invalid_penalty', 1.0)),
+                lambda_param=0.0,   # 每 iter 由 _lambda_param(progress) 更新
             )
-            print("reward mode: STEPWISE (dense per-step ΔQ + progress-gated stop)")
+            # param_penalty 查表：算子名序 + spec 表（与 Controller 同源）
+            self.reward_fn._op_names = list(cfg.operators)
+            self.reward_fn._op_specs = {n: self.runtime.operators[n].spec
+                                        for n in cfg.operators}
+            _pr = (cfg.get('param_regularization', {}) or {})
+            _suffix = " + param_reg(λ=cosine)" if _pr.get('enable', False) else ""
+            print(f"reward mode: STEPWISE (dense per-step ΔQ + progress-gated stop){_suffix}")
         else:
             self.reward_fn = HumanReward(
                 n_ops=len(cfg.operators),
@@ -157,8 +164,8 @@ class HumanTrainer(BaseTrainer):
         # `images_per_epoch` default = full dataset for Human (Detection uses 1000).
         cfg.setdefault('images_per_epoch', len(self.train_dataset))
         self._finalize_cfg_derived_fields(args, cfg)
-        # Progressive Parameter Bounds（parameter_curriculum: 配置块）
-        self._init_param_curriculum(cfg)
+        # Neutral-Distance Parameter Regularization（param_regularization:）
+        self._init_param_reg(cfg)
 
         self.cfg = cfg
 
@@ -245,8 +252,9 @@ class HumanTrainer(BaseTrainer):
         for it in range(max_iter_step + 1):
             self.controller.train()
             progress = float(it) / max(max_iter_step, 1)
-            # Progressive Parameter Bounds：早期收缩参数范围（关闭时恒 1.0）
-            self._update_range_scale(progress)
+            # Neutral-distance param regularization: cosine λ_p(ρ)
+            if use_ppo:  # stepwise reward 才有 lambda_param
+                self.reward_fn.lambda_param = self._lambda_param(progress)
 
             imgs, targets, cam_ids = self._next_batch()
             imgs = imgs.to(self.device, non_blocking=True).float()
@@ -299,6 +307,8 @@ class HumanTrainer(BaseTrainer):
                     state_before=state, action=ctrl_out.action, state_after=new_state,
                     entropy=ctrl_out.entropy, progress=progress, q_initial=q_initial,
                     q_before=q_before,
+                    physical_params=ctrl_out.action.params,
+                    param_op_indices=ctrl_out.action.op_indices,
                 )
                 reward_totals.append(r.mean().detach())
                 if q_parts:
@@ -482,9 +492,10 @@ class HumanTrainer(BaseTrainer):
                     bits_r.append(f"stop+={win['stop_b'] / wi:+.3f}")
                 if self.cfg.filter_runtime_penalty:
                     bits_r.append(f"runt=-{win['runt'] / wi:.3f}")
+                if self._param_reg['enabled'] and use_ppo:
+                    bits_r.append(f"param=-{self.reward_fn.lambda_param * win['param_pen'] / wi:+.4f}")
                 print(f"reward   total={win['total'] / wi:+.3f}")
                 print(f"         {' | '.join(bits_r)}")
-
                 # policy — loss / value are cumulative means over iters;
                 # entropy / stop / avg_len / top_prob are per-decision or
                 # per-rollout statistics over the window. avg_len 的分母是
@@ -498,6 +509,9 @@ class HumanTrainer(BaseTrainer):
                     f"entropy={pol_ent:.3f}/{log_n_ops_plus1:.3f}  "
                     f"stop={stop_pct:.0f}%  avg_len={avg_len:.1f}/{len_cap}"
                 )
+                # if self._param_reg['enabled'] and use_ppo:
+                #     print(f"         param_reg λ={self.reward_fn.lambda_param:.2e}"
+                #           f"  d²mean={win['param_pen'] / wn:.4f}")
                 if win['pdf_n'] > 0:
                     mean_pdf = win['pdf_sum'] / win['pdf_n']
                     top_idx = np.argsort(-mean_pdf)[:4]
@@ -596,10 +610,7 @@ class HumanTrainer(BaseTrainer):
         TensorBoard. Returns the metrics dict for the caller's log/summary use.
         """
         self.controller.eval()
-        # Validation 始终用完整参数范围（range_scale=1.0）——课程只是训练期
-        # 的探索辅助，不改变评估语义。
-        prev_scale = self.controller.range_scale
-        self.controller.range_scale = 1.0
+        # 参数恒为完整范围（旧 range_scale 机制已移除，无需切换）。
         T = int(self.cfg.test_steps)
         from tasks.human_quality import psnr_batch, delta_e_batch
         ssim_sum, lpips_sum, lab_ab_sum, q_sum, len_sum, stop_count, n = 0.0, 0.0, 0.0, 0.0, 0, 0, 0
@@ -667,7 +678,6 @@ class HumanTrainer(BaseTrainer):
         print(f"  mean rollout length: {metrics['val/mean_length']:.2f}/{max(T - 1, 1)}")
         print(f"  pct learned-STOP (before time-limit): {100 * metrics['val/pct_learned_stop']:.1f}%")
         print("=================================\n")
-        self.controller.range_scale = prev_scale   # 恢复训练期课程状态
         return metrics
 
 

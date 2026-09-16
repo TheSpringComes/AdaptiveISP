@@ -53,14 +53,24 @@ class InfEBF(ISPOperator):
     short_name = "iEBF"
     spec = ParameterSpec(
         dim=1, low=0.0, high=1.0, regressor=torch.sigmoid,
-        description="edge-preserving bilateral filter strength (range sigma)",
+        description="edge-preserving bilateral blend (0=identity, 1=full EBF)",
     )
     runtime_cost = 8.0
 
     def apply(self, img: torch.Tensor, params: torch.Tensor) -> torch.Tensor:
+        """Identity-blend form: out = img + α·(F_α(img) − img).
+
+        α=0 → 精确恒等（直接返回原图，不进滤波循环）。
+        α 同时控制 range-sigma 位置（σ_r 从 LO 渐开到 HI）与输出混合比——
+        原 parameterization 的 α 是 σ 位置（α=0 → σ=0.05 仍滤波，无
+        identity 点），改为 blend 后 α=0 = identity，BLEND 课程语义成立。
+        """
         img = img.clamp(0.0, 1.0)
         b = img.shape[0]
         alpha = params.view(b, 1, 1, 1).clamp(0.0, 1.0)
+        # α=0 的样本直接恒等（跳过滤波循环；也避免 σ→LO 的无谓计算）
+        if bool((alpha < 1e-6).all()):
+            return img
         sigma_r = (_EBF_SIGMA_R_LO + (_EBF_SIGMA_R_HI - _EBF_SIGMA_R_LO) * alpha)
 
         # Luminance guide for range weights (edge preservation on brightness).
@@ -77,4 +87,5 @@ class InfEBF(ISPOperator):
                 w = spatial_w * range_w
                 accum = accum + w * shifted
                 wsum = wsum + w
-        return (accum / (wsum + 1e-8)).clamp(0.0, 1.0)
+        filtered = (accum / (wsum + 1e-8)).clamp(0.0, 1.0)
+        return img + alpha * (filtered - img)

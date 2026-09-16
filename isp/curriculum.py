@@ -76,19 +76,20 @@ def parse_curriculum_cfg(cfg: dict) -> dict:
 # ccm：identity-centered residual——regressor 已输出 M = I + δ·tanh(z)，
 # curriculum 在矩阵域做 residual 缩放 M' = I + s·(M − I)，发生在 apply 的
 # 行归一化之前（归一化对均匀 residual 缩放不敏感，必须先缩放再归一化）。
-# 无 identity 点、暂用 linear 收缩待人工重定义的算子：
-#   sharpen  — factor 是 blur↔sharpen 混合（1=锐化 0=模糊，轴上无 identity）
-#   inf_ebf  — 参数是 bilateral 的 range-sigma 位置（α=0 → σ=0.05，仍是有效滤波）
-_LINEAR = ("exposure", "contrast", "tone", "sharpen", "inf_ebf")
+_LINEAR = ("exposure", "contrast", "tone")
+# sharpen：factor = 1 + tanh(z)（identity-centered 残差，factor=1 = 原图）。
+# 课程 = factor' = 1 + s·tanh(z)，围绕 1 收缩（负方向模糊、正方向锐化）。
+_SHARPEN = ("sharpen",)
 _CCM = ("ccm",)
 _LOG = ("gamma", "whitebalance", "inf_digital_gain", "inf_saturation")
 _BLEND = ("denoise", "wnb", "saturation",
           "n_denoise", "n_awb", "n_gain", "n_gtm", "n_chroma",
           "n_gamma", "n_detail",
           "inf_awb_grayworld", "inf_awb_norm2", "inf_awb_pca",
-          "inf_ldci", "inf_unsharp", "inf_nlm")
+          "inf_ldci", "inf_unsharp", "inf_nlm", "inf_ebf")
 
 _MODES = {**{n: "linear" for n in _LINEAR},
+          **{n: "sharpen" for n in _SHARPEN},
           **{n: "ccm" for n in _CCM},
           **{n: "log" for n in _LOG},
           **{n: "blend" for n in _BLEND}}
@@ -132,6 +133,12 @@ def scale_params(name: str, spec: ParameterSpec, raw: torch.Tensor,
         # 先缩放才能让课程真正生效。s=1 → M'=M（逐位还原）。
         eye9 = torch.eye(3, device=p.device, dtype=p.dtype).flatten()
         return eye9 + s * (p - eye9)
+
+    if mode == "sharpen":
+        # Identity-centered 残差：regressor 输出 factor = 1 + tanh(z)。
+        # 课程 = factor' = 1 + s·(factor − 1)，围绕 1 收缩：
+        # 负方向=模糊、正方向=锐化，早期只允许轻微偏移。s=1 → 精确还原。
+        return 1.0 + s * (p - 1.0)
 
     # 中性点 = 零输出的物理值（tanh_range 的 initial / blend 0.5 中点等
     # 都编码在内）。no_grad：中性点是常数锚，不参与参数头梯度。

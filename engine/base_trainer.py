@@ -135,21 +135,20 @@ class BaseTrainer:
 
     # -------------------- optimizer + resume + save --------------------
 
-    def _init_param_curriculum(self, cfg) -> None:
-        """Parse `parameter_curriculum:` block (default disabled).
+    def _init_param_reg(self, cfg) -> None:
+        """Parse `param_regularization:` block (default disabled).
 
-        Disabled → controller.range_scale stays 1.0 forever → bit-identical
-        to pre-curriculum behavior.
+        Neutral-distance parameter regularization: full parameter range
+        always used; per-step penalty λ_p(ρ)·d_t² added to the reward
+        (see isp/param_reg.py). Disabled → λ=0, no penalty.
         """
-        from isp.curriculum import parse_curriculum_cfg
-        self._param_curriculum = parse_curriculum_cfg(cfg)
+        from isp.param_reg import parse_param_reg_cfg
+        self._param_reg = parse_param_reg_cfg(cfg)
 
-    def _update_range_scale(self, progress: float) -> None:
-        """Progressive Parameter Bounds: progress → range_scale, set on the
-        controller. Call once per train iter (both trainers)."""
-        from isp.curriculum import range_scale_for_progress
-        self.controller.range_scale = range_scale_for_progress(
-            progress, **self._param_curriculum)
+    def _lambda_param(self, progress: float) -> float:
+        """progress → current param-penalty coefficient (cosine schedule)."""
+        from isp.param_reg import lambda_param_for_progress
+        return lambda_param_for_progress(progress, **self._param_reg)
 
     def _build_optimizer_and_scheduler(self, args, cfg):
         # V3.1 两阶段训练：Stage 2 的 optimizer 只含 Controller —— Front
@@ -278,7 +277,7 @@ class BaseTrainer:
             'ovfl': 0.0, 'stop_b': 0.0, 'runt': 0.0, 'total': 0.0,
             'pol_ent': 0.0, 'argmax_hits': 0, 'argmax_seen': 0,
             'n_stop': 0, 'n_stop_learned': 0, 'n_stop_timelimit': 0,
-            'len_sum': 0, 'n_samples': 0,
+            'len_sum': 0, 'n_samples': 0, 'param_pen': 0.0, 'param_d': 0.0,
         }
         if n_ops:
             win['pdf_sum'] = np.zeros(n_ops + 1, dtype=np.float64)   # + STOP col
@@ -318,6 +317,8 @@ class BaseTrainer:
         win['runt'] += float(breakdown.runtime_penalty.mean().item())
         if getattr(breakdown, 'stop_bonus', None) is not None:
             win['stop_b'] += float(breakdown.stop_bonus.mean().item())
+        if getattr(breakdown, 'param_penalty', None) is not None:
+            win['param_pen'] += float(breakdown.param_penalty.mean().item())
         win['total'] += float(breakdown.total.mean().item())
         win['pol_ent'] += float(entropy.mean().item())
 

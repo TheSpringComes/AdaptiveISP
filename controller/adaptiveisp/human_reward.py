@@ -247,6 +247,7 @@ class StepwiseHumanReward(Reward):
         runtime_penalty_lambda: float = 0.0005,
         runtime_costs: Optional[list[float]] = None,
         invalid_penalty: float = 0.1,          # overflow scale; NaN pays flat 1.0
+        lambda_param: float = 0.0,             # neutral-distance param penalty coef
     ) -> None:
         self.n_ops = int(n_ops)
         self.max_steps = int(max_steps)
@@ -254,6 +255,9 @@ class StepwiseHumanReward(Reward):
         self.lambda_lpips = float(lambda_lpips)
         self.lambda_lab_ab = float(lambda_lab_ab)
         self.lpips_net = lpips_net
+        # param_penalty 查表用（trainer 注入：op 名列表 + spec 表）
+        self._op_names: list = []
+        self._op_specs: dict = {}
         self.alpha = float(quality_scale)
         self.beta = float(stop_bonus_beta)
         self.usage_base = float(usage_penalty)
@@ -261,6 +265,7 @@ class StepwiseHumanReward(Reward):
         self.runtime_penalty_lambda = float(runtime_penalty_lambda)
         self.runtime_costs = list(runtime_costs or [])
         self.invalid_penalty = float(invalid_penalty)
+        self.lambda_param = float(lambda_param)
 
         if self.runtime_penalty_enabled and len(self.runtime_costs) != self.n_ops:
             raise ValueError(
@@ -280,6 +285,9 @@ class StepwiseHumanReward(Reward):
         progress: float = 0.0,                     # unused
         q_initial: Optional[torch.Tensor] = None,
         q_before: Optional[torch.Tensor] = None,
+        physical_params: Optional[torch.Tensor] = None,   # [B, max_dim] 实际执行参数
+        param_op_name: Optional[str] = None,              # 本步（sample 0 参考）算子
+        param_op_indices: Optional[torch.Tensor] = None,  # [B] 每样本选中算子 idx
     ) -> tuple[torch.Tensor, RewardBreakdown, dict[str, torch.Tensor]]:
         """One new quality_score call per step; returns (reward, breakdown, q_parts).
 
@@ -374,8 +382,30 @@ class StepwiseHumanReward(Reward):
         # NaN/Inf 是硬失效：单独支付全额 1.0（invalid_penalty 只缩放 overflow）。
         invalid_penalty = overflow * self.invalid_penalty + is_nan * 1.0
 
-        # Total: r_t = αΔQ_t − guards + stop_reward
-        reward = task_delta - usage_penalty - runtime_penalty - invalid_penalty + stop_reward
+        # 6. Neutral-distance parameter regularization:
+        #    P_param = λ_p · d_t²，d_t = 实际参数相对 neutral 的归一化距离。
+        #    λ_p 由 trainer 按 cosine schedule 设置（progress <30% 衰减到 0）；
+        #    只对实际执行的算子参数计罚（STOP / 未执行步不罚）。
+        from isp.param_reg import param_distance
+        param_penalty = torch.zeros((B, 1), device=device)
+        if self.lambda_param > 0.0 and physical_params is not None \
+                and param_op_indices is not None:
+            # 逐样本：其选中算子的参数距离。physical_params 是 [B, max_dim]，
+            # 每个样本只有自己算子的前 spec.dim 维有效。
+            for b in range(B):
+                if action.is_stop[b] or state_before.stopped[b]:
+                    continue
+                op_idx = int(param_op_indices[b].item())
+                op_name = self._op_names[op_idx]
+                spec = self._op_specs[op_name]
+                d = param_distance(op_name, spec,
+                                   physical_params[b:b+1, :spec.dim])
+                param_penalty[b, 0] = (d.mean() ** 2).item()
+
+        # Total: r_t = αΔQ_t − guards + stop_reward − P_param
+        reward = (task_delta - usage_penalty - runtime_penalty
+                  - invalid_penalty - self.lambda_param * param_penalty
+                  + stop_reward)
 
         # Breakdown maps onto the existing logging fields: `task_delta`
         # holds the dense αΔQ_t; `stop_bonus` (unused in legacy human) now
@@ -390,6 +420,7 @@ class StepwiseHumanReward(Reward):
             runtime_penalty=runtime_penalty,
             total=reward,
             stop_bonus=stop_reward,
+            param_penalty=param_penalty if self.lambda_param > 0.0 else None,
         ), q_parts
 
 

@@ -128,6 +128,8 @@ class Trainer(BaseTrainer):
 
         self.args = args
         self._finalize_cfg_derived_fields(args, cfg)
+        # Neutral-Distance Parameter Regularization（param_regularization:）
+        self._init_param_reg(cfg)
 
         self.gs = gs
         self.hyp = hyp
@@ -236,8 +238,6 @@ class Trainer(BaseTrainer):
             self.controller.train()
             self.task_model.train()
             progress = float(iter) / max(self.cfg.max_iter_step, 1)
-            # Progressive Parameter Bounds：早期收缩参数范围（关闭时恒 1.0）
-            self._update_range_scale(progress)
 
             if use_ppo:
                 # -------- PPO branch: T-step rollout, no replay --------

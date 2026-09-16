@@ -87,10 +87,6 @@ class AdaptiveISPController(Controller):
         )
         self.exploration = float(exploration)
         self.max_steps = int(max_steps)
-        # Progressive Parameter Bounds：当前参数范围比例。trainer 按
-        # 训练进度设置（isp/curriculum.py）；默认 1.0 = 完整范围——
-        # eval / visualizer 构建的 controller 不设置即始终全范围。
-        self.range_scale: float = 1.0
         # STOP action is forbidden until state.step >= min_rollout_length.
         # =1 (default) matches the pre-tune behavior "STOP forbidden only at
         # step 0". Raise to 3 in E3 configs so PPO can't short-circuit to
@@ -164,9 +160,12 @@ class AdaptiveISPController(Controller):
                 continue
             op = self.operators[name]
             raw = self.param_heads[name](pf[mask])
-            # Progressive bounds：range_scale>=1 时内部直通 spec.regressor
-            # （逐位等于旧行为）；<1 时按算子的缩放空间收缩（见 isp/curriculum.py）。
-            physical = scale_params(name, op.spec, raw, self.range_scale)
+            # 参数映射：完整合法范围。blend 类走 identity-centered tanh²
+            #（raw=0 → α≈0 恒 identity，是参数定义）；其余直通 spec.regressor。
+            # 旧 Progressive Bounds 已被 isp/param_reg.py 的 neutral-distance
+            # 正则化取代（惩罚进 reward，不再压缩范围）。
+            from isp.curriculum import scale_params
+            physical = scale_params(name, op.spec, raw, 1.0)
             if physical.dim() > 2:
                 physical = physical.reshape(physical.shape[0], -1)
             params_flat[mask, :op.spec.dim] = physical

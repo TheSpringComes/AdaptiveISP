@@ -37,6 +37,8 @@ class RewardBreakdown:
     total: torch.Tensor
     # Optional: stop-time bonus for Detection reward (learned STOP).
     stop_bonus: Optional[torch.Tensor] = None
+    # Optional: neutral-distance parameter regularization (isp/param_reg.py).
+    param_penalty: Optional[torch.Tensor] = None
 
 
 class Reward(ABC):
