@@ -73,7 +73,7 @@ class NonLocalMeans(nn.Module):
 
     def forward(self, rgb, h):
         batch_size, _, height, width = rgb.shape
-        weights = torch.zeros((batch_size, 3, height, width)).float().to(rgb.device)  # (N, 3, H, W)
+        weights = torch.zeros((batch_size, 3, height, width), dtype=rgb.dtype, device=rgb.device)  # (N, 3, H, W)
         denoised_rgb = torch.zeros_like(rgb)  # (N, 3, H, W)
 
         for x_shift in range(-self.r, self.r + 1):
@@ -98,7 +98,7 @@ class NonLocalMeansGray(nn.Module):
 
     def forward(self, rgb, h):
         batch_size, _, height, width = rgb.shape
-        weights = torch.zeros((batch_size, 1, height, width)).float().to(rgb.device)  # (N, 1, H, W)
+        weights = torch.zeros((batch_size, 1, height, width), dtype=rgb.dtype, device=rgb.device)  # (N, 1, H, W)
         denoised_rgb = torch.zeros_like(rgb)  # (N, 3, H, W)
 
         y = rgb_to_luminance(rgb)  # (N, 1, H, W)

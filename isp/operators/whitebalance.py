@@ -8,7 +8,6 @@ Note the two idiosyncrasies preserved verbatim from the original:
 """
 from __future__ import annotations
 
-import numpy as np
 import torch
 
 from isp.base import ISPOperator, ParameterSpec, tanh_range
@@ -19,8 +18,7 @@ _LOG_WB_RANGE = 0.5
 
 def _wb_regressor(features: torch.Tensor) -> torch.Tensor:
     # Zero the R-channel logit (matches original filter behavior).
-    mask = torch.tensor(np.array((0, 1, 1), dtype=np.float32).reshape(1, 3),
-                        device=features.device)
+    mask = torch.tensor([[0.0, 1.0, 1.0]], device=features.device, dtype=features.dtype)
     features = features * mask
     scaling = torch.exp(tanh_range(-_LOG_WB_RANGE, _LOG_WB_RANGE)(features))
     lum = 0.27 * scaling[:, 0] + 0.67 * scaling[:, 1] + 0.06 * scaling[:, 2]
